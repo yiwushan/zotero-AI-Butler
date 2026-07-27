@@ -137,6 +137,14 @@ function doubaoTopPOptions(): Array<{ value: string; label: string }> {
   ];
 }
 
+function doubaoStreamOptions(): Array<{ value: string; label: string }> {
+  return [
+    { value: "false", label: t("endpoint-doubao-stream-stable") },
+    { value: "true", label: t("endpoint-doubao-stream-live") },
+    { value: "default", label: t("endpoint-doubao-stream-global") },
+  ];
+}
+
 function localizedPdfProcessModeLabel(mode: string): string {
   if (mode === "text") return t("endpoint-pdf-text-short");
   if (mode === "mineru") return t("endpoint-pdf-mineru-short");
@@ -1180,6 +1188,20 @@ export class EndpointSettingsPanel {
     );
     addSelect(t("endpoint-doubao-top-p-label"), topPSelect);
 
+    const streamSelect = createSelect(
+      `endpoint-${endpoint.id}-doubaoStream`,
+      doubaoStreamOptions(),
+      endpoint.stream === undefined ? "default" : String(endpoint.stream),
+      (newValue) => {
+        endpoint.stream =
+          newValue === "default" ? undefined : newValue === "true";
+        endpoint.doubaoTuningPreset = "custom";
+        this.persist();
+        this.render();
+      },
+    );
+    addSelect(t("endpoint-doubao-stream-label"), streamSelect);
+
     const maxOutputSelect = createSelect(
       `endpoint-${endpoint.id}-doubaoMaxOutput`,
       doubaoMaxOutputOptions(),
@@ -1591,7 +1613,10 @@ export class EndpointSettingsPanel {
       status.textContent = result || t("endpoint-connection-success");
       status.style.color = "#4caf50";
     } catch (error: any) {
-      status.textContent = error?.message || String(error);
+      status.textContent =
+        error?.name === "APITestError" && error?.details
+          ? error.formatReport?.() || error?.message || String(error)
+          : error?.message || String(error);
       status.style.color = "#f44336";
     }
   }

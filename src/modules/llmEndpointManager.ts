@@ -21,6 +21,7 @@ export interface LLMDoubaoTuningValues {
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;
+  stream?: boolean;
 }
 
 export interface LLMEndpoint {
@@ -35,6 +36,7 @@ export interface LLMEndpoint {
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;
+  stream?: boolean;
   pdfProcessMode?: LLMEndpointPdfProcessMode;
   enabled: boolean;
   createdAt: string;
@@ -117,10 +119,14 @@ const DOUBAO_TUNING_PRESETS: Record<
   LLMDoubaoTuningValues
 > = {
   "model-default": { reasoningEffort: "default" },
-  academic: { reasoningEffort: "low", temperature: 0.2 },
-  "deep-reasoning": { reasoningEffort: "high", temperature: 0.2 },
-  fast: { reasoningEffort: "none", temperature: 0.2 },
-  creative: { reasoningEffort: "low", temperature: 0.8 },
+  academic: { reasoningEffort: "low", temperature: 0.2, stream: false },
+  "deep-reasoning": {
+    reasoningEffort: "high",
+    temperature: 0.2,
+    stream: false,
+  },
+  fast: { reasoningEffort: "none", temperature: 0.2, stream: true },
+  creative: { reasoningEffort: "low", temperature: 0.8, stream: true },
 };
 
 function nowIso(): string {
@@ -198,6 +204,10 @@ function normalizeOptionalPositiveInteger(raw: unknown): number | undefined {
   return value === undefined ? undefined : Math.floor(value);
 }
 
+function normalizeOptionalBoolean(raw: unknown): boolean | undefined {
+  return typeof raw === "boolean" ? raw : undefined;
+}
+
 function parseJsonArray(raw: unknown): unknown[] {
   if (typeof raw !== "string" || !raw.trim()) return [];
   try {
@@ -214,6 +224,13 @@ function normalizeEndpoint(
 ): LLMEndpoint {
   const providerType = safeProviderType(raw.providerType);
   const defaults = providerDefaults(providerType);
+  const doubaoTuningPreset = normalizeDoubaoTuningPreset(
+    raw.doubaoTuningPreset,
+  );
+  const doubaoPresetValues =
+    providerType !== "volcanoark" || doubaoTuningPreset === "custom"
+      ? undefined
+      : DOUBAO_TUNING_PRESETS[doubaoTuningPreset];
   const createdAt = raw.createdAt || nowIso();
   return {
     id: String(raw.id || "").trim() || makeEndpointId(),
@@ -224,13 +241,18 @@ function normalizeEndpoint(
     apiKey: String(raw.apiKey || "").trim(),
     model: String(raw.model || defaults.model).trim(),
     reasoningEffort: normalizeReasoningEffortSetting(
-      raw.reasoningEffort,
+      raw.reasoningEffort ?? doubaoPresetValues?.reasoningEffort,
       defaults.reasoningEffort || "default",
     ),
-    doubaoTuningPreset: normalizeDoubaoTuningPreset(raw.doubaoTuningPreset),
-    temperature: normalizeOptionalNumber(raw.temperature, 0, 2),
-    topP: normalizeOptionalNumber(raw.topP, 0, 1),
-    maxOutputTokens: normalizeOptionalPositiveInteger(raw.maxOutputTokens),
+    doubaoTuningPreset,
+    temperature:
+      normalizeOptionalNumber(raw.temperature, 0, 2) ??
+      doubaoPresetValues?.temperature,
+    topP: normalizeOptionalNumber(raw.topP, 0, 1) ?? doubaoPresetValues?.topP,
+    maxOutputTokens:
+      normalizeOptionalPositiveInteger(raw.maxOutputTokens) ??
+      doubaoPresetValues?.maxOutputTokens,
+    stream: normalizeOptionalBoolean(raw.stream) ?? doubaoPresetValues?.stream,
     pdfProcessMode: normalizeEndpointPdfProcessMode(raw.pdfProcessMode),
     enabled: raw.enabled !== false,
     createdAt,
@@ -298,6 +320,7 @@ export class LLMEndpointManager {
     endpoint.temperature = values.temperature;
     endpoint.topP = values.topP;
     endpoint.maxOutputTokens = values.maxOutputTokens;
+    endpoint.stream = values.stream;
   }
 
   static getGlobalPdfProcessMode(): LLMPdfProcessMode {
@@ -349,6 +372,7 @@ export class LLMEndpointManager {
       doubaoTuningPreset:
         providerType === "volcanoark" ? "academic" : "model-default",
       temperature: providerType === "volcanoark" ? 0.2 : undefined,
+      stream: providerType === "volcanoark" ? false : undefined,
       pdfProcessMode: "global",
       enabled: true,
       createdAt: timestamp,
@@ -551,6 +575,7 @@ export class LLMEndpointManager {
       temperature: previous.temperature,
       topP: previous.topP,
       maxOutputTokens: previous.maxOutputTokens,
+      stream: previous.stream,
       pdfProcessMode: previous.pdfProcessMode || "global",
     };
 
@@ -672,6 +697,7 @@ export class LLMEndpointManager {
       a.temperature === b.temperature &&
       a.topP === b.topP &&
       a.maxOutputTokens === b.maxOutputTokens &&
+      a.stream === b.stream &&
       (a.pdfProcessMode || "global") === (b.pdfProcessMode || "global") &&
       a.enabled === b.enabled
     );

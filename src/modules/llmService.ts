@@ -316,7 +316,13 @@ export class LLMService {
     const enableTopP = getPref("enableTopP") ?? false;
 
     const common: LLMOptions = {
-      stream: transport?.stream ?? getPref("stream") ?? true,
+      stream:
+        transport?.stream ??
+        (endpoint?.providerType === "volcanoark"
+          ? endpoint.stream
+          : undefined) ??
+        getPref("stream") ??
+        true,
       requestTimeoutMs: transport?.timeoutMs ?? this.getRequestTimeout(),
       abortSignal: transport?.abortSignal,
       enablePromptCache:

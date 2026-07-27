@@ -139,8 +139,18 @@ describe("LLMEndpointManager", function () {
       doubaoTuningPreset: "academic",
       reasoningEffort: "low",
       temperature: 0.2,
+      stream: false,
     });
     expect(endpoint.maxOutputTokens).to.equal(undefined);
+  });
+
+  it("migrates an existing academic preset to stable transport", function () {
+    const endpoint = LLMEndpointManager.createEndpoint("volcanoark");
+    delete endpoint.stream;
+
+    LLMEndpointManager.saveEndpoints([endpoint]);
+
+    expect(LLMEndpointManager.getEndpoints()[0].stream).to.equal(false);
   });
 
   it("applies Doubao tuning presets without imposing an output cap", function () {
@@ -154,10 +164,12 @@ describe("LLMEndpointManager", function () {
     });
     expect(endpoint.maxOutputTokens).to.equal(undefined);
     expect(endpoint.topP).to.equal(undefined);
+    expect(endpoint.stream).to.equal(false);
 
     LLMEndpointManager.applyDoubaoTuningPreset(endpoint, "model-default");
     expect(endpoint.reasoningEffort).to.equal("default");
     expect(endpoint.temperature).to.equal(undefined);
+    expect(endpoint.stream).to.equal(undefined);
   });
 
   it("passes endpoint-specific Doubao tuning into request options", function () {
@@ -171,6 +183,7 @@ describe("LLMEndpointManager", function () {
     expect(academic.temperature).to.equal(0.2);
     expect(academic.topP).to.equal(undefined);
     expect(academic.maxTokens).to.equal(undefined);
+    expect(academic.stream).to.equal(false);
 
     LLMEndpointManager.applyDoubaoTuningPreset(endpoint, "model-default");
     Zotero.Prefs.set(prefName("enableTopP"), false, true);
