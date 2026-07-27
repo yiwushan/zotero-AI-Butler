@@ -64,3 +64,19 @@ export function resolveOpenRouterReasoningEffort(
 ): LLMReasoningEffort | undefined {
   return resolveReasoningEffort(value);
 }
+
+export type VolcanoThinkingType = "disabled" | "auto" | "enabled";
+
+/**
+ * 方舟 Responses API 使用 thinking.type，而不是 OpenAI 的 reasoning.effort。
+ * 复用统一设置值，并将其折叠为方舟支持的三档思考模式。
+ */
+export function resolveVolcanoThinkingType(
+  value: unknown,
+): VolcanoThinkingType | undefined {
+  const effort = resolveReasoningEffort(value);
+  if (!effort) return undefined;
+  if (effort === "none" || effort === "minimal") return "disabled";
+  if (effort === "low") return "auto";
+  return "enabled";
+}

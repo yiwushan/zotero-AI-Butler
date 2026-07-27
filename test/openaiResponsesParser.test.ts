@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import {
   parseOpenAIResponsesDelta,
+  parseOpenAIResponsesSseText,
   parseOpenAIResponsesText,
 } from "../src/modules/llmproviders/shared/openaiResponses";
 
@@ -52,5 +53,22 @@ describe("OpenAI Responses parser", function () {
     expect(chunks.map(parseOpenAIResponsesDelta).join("")).to.equal(
       "# Title\n- item",
     );
+  });
+
+  it("reconstructs text from a completed SSE event", function () {
+    const sse =
+      'data: {"type":"response.created"}\n\n' +
+      'data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"final answer"}]}]}}\n\n';
+
+    expect(parseOpenAIResponsesSseText(sse)).to.equal("final answer");
+  });
+
+  it("prefers SSE deltas over completed snapshots", function () {
+    const sse =
+      'data: {"type":"response.output_text.delta","delta":"hello "}\n\n' +
+      'data: {"type":"response.output_text.delta","delta":"world"}\n\n' +
+      'data: {"type":"response.output_text.done","text":"hello world"}\n\n';
+
+    expect(parseOpenAIResponsesSseText(sse)).to.equal("hello world");
   });
 });

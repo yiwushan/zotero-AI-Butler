@@ -52,7 +52,17 @@ function fieldDescription(text: string): string {
   return text;
 }
 
-function reasoningEffortOptions(): Array<{ value: string; label: string }> {
+function reasoningEffortOptions(
+  providerType?: LLMEndpointProviderType,
+): Array<{ value: string; label: string }> {
+  if (providerType === "volcanoark") {
+    return [
+      { value: "default", label: "模型默认：使用该版本的默认思考模式" },
+      { value: "none", label: "关闭：直接回答，速度优先" },
+      { value: "low", label: "自动：按任务难度决定是否思考" },
+      { value: "high", label: "强制：始终深度思考，质量优先" },
+    ];
+  }
   return [
     { value: "default", label: "默认：依赖模型默认行为，不作任何配置" },
     { value: "none", label: "关闭：禁用推理" },
@@ -79,7 +89,8 @@ function endpointSupportsReasoningEffort(endpoint: LLMEndpoint): boolean {
   return (
     endpoint.providerType === "openai" ||
     endpoint.providerType === "openai-compat" ||
-    endpoint.providerType === "openrouter"
+    endpoint.providerType === "openrouter" ||
+    endpoint.providerType === "volcanoark"
   );
 }
 
@@ -988,15 +999,19 @@ export class EndpointSettingsPanel {
 
   private renderReasoningEffortField(endpoint: LLMEndpoint): HTMLElement {
     const defaults = LLMEndpointManager.providerDefaults(endpoint.providerType);
-    const value = normalizeReasoningEffortSetting(
+    let value = normalizeReasoningEffortSetting(
       endpoint.reasoningEffort,
       defaults.reasoningEffort || "default",
     );
+    if (endpoint.providerType === "volcanoark") {
+      if (value === "minimal") value = "none";
+      if (value === "medium" || value === "xhigh") value = "high";
+    }
     endpoint.reasoningEffort = value;
 
     const select = createSelect(
       `endpoint-${endpoint.id}-reasoningEffort`,
-      reasoningEffortOptions(),
+      reasoningEffortOptions(endpoint.providerType),
       value,
       (newValue) => {
         endpoint.reasoningEffort = normalizeReasoningEffortSetting(
@@ -1007,7 +1022,15 @@ export class EndpointSettingsPanel {
       },
     );
 
-    return createFormGroup("思维链长度", select);
+    return createFormGroup(
+      endpoint.providerType === "volcanoark" ? "思考模式" : "思维链长度",
+      select,
+      endpoint.providerType === "volcanoark"
+        ? fieldDescription(
+            "火山方舟使用 thinking.type 控制关闭、自动或强制深度思考。",
+          )
+        : undefined,
+    );
   }
 
   private renderConnectionTest(endpoint: LLMEndpoint): HTMLElement {

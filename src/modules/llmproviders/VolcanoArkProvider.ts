@@ -18,6 +18,12 @@ import {
   requestModelListJson,
 } from "./shared/modelList";
 import {
+  parseOpenAIResponsesDelta,
+  parseOpenAIResponsesSseText,
+  parseOpenAIResponsesText,
+} from "./shared/openaiResponses";
+import { buildVolcanoGenerationOptions } from "./shared/volcano";
+import {
   bindAbortSignal,
   isAbortError,
   normalizeAbortError,
@@ -37,7 +43,7 @@ export class VolcanoArkProvider implements ILlmProvider {
     supportsPdfBase64: true,
     maxPdfFiles: 20,
     supportsSystemPrompt: true,
-    supportedParams: ["temperature", "maxTokens", "stream"],
+    supportedParams: ["temperature", "maxTokens", "stream", "reasoningEffort"],
   };
 
   async generateSummary(
@@ -51,9 +57,9 @@ export class VolcanoArkProvider implements ILlmProvider {
       options.apiUrl || "https://ark.cn-beijing.volces.com/api/v3/responses"
     ).replace(/\/$/, "");
     const apiKey = (options.apiKey || "").trim();
-    const model = (options.model || "doubao-seed-1-6-251015").trim();
+    const model = (options.model || "doubao-seed-2-1-pro-260628").trim();
     const temperature = options.temperature ?? 0.7;
-    const maxTokens = options.maxTokens ?? 4096;
+    const stream = options.stream ?? true;
 
     if (!baseUrl) throw new Error("火山引擎 API URL 未配置");
     if (!apiKey) throw new Error("火山引擎 API Key 未配置");
@@ -69,9 +75,8 @@ export class VolcanoArkProvider implements ILlmProvider {
       // PDF Base64 模式 - 使用 input_file
       payload = {
         model,
-        stream: true,
+        stream,
         temperature,
-        max_output_tokens: maxTokens,
         input: [
           {
             role: "system",
@@ -98,9 +103,8 @@ export class VolcanoArkProvider implements ILlmProvider {
       const userContent = buildUserMessage(prompt || "", content);
       payload = {
         model,
-        stream: true,
+        stream,
         temperature,
-        max_output_tokens: maxTokens,
         input: [
           {
             role: "system",
@@ -113,6 +117,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         ],
       };
     }
+    Object.assign(payload, buildVolcanoGenerationOptions(options));
 
     const chunks: string[] = [];
     let delivered = 0;
@@ -120,10 +125,11 @@ export class VolcanoArkProvider implements ILlmProvider {
     let partialLine = "";
     let gotAnyDelta = false;
     let abortError: Error | null = null;
+    let rawStreamResponse = "";
     let cleanupAbortSignal: (() => void) | undefined;
 
     try {
-      await Zotero.HTTP.request("POST", endpoint, {
+      const response = await Zotero.HTTP.request("POST", endpoint, {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
@@ -160,6 +166,7 @@ export class VolcanoArkProvider implements ILlmProvider {
 
             try {
               const resp: string = e.target.response || "";
+              rawStreamResponse = resp;
               if (resp.length > processedLength) {
                 const slice = partialLine + resp.slice(processedLength);
                 processedLength = resp.length;
@@ -203,6 +210,8 @@ export class VolcanoArkProvider implements ILlmProvider {
           };
         },
       });
+      rawStreamResponse =
+        response?.response || response?.responseText || rawStreamResponse;
     } catch (error: any) {
       if (abortError || isAbortError(error, options.abortSignal)) {
         throw normalizeAbortError(abortError || error, options.abortSignal);
@@ -230,9 +239,13 @@ export class VolcanoArkProvider implements ILlmProvider {
       cleanupAbortSignal?.();
     }
 
-    const streamed = chunks.join("");
-    if (gotAnyDelta && streamed) return streamed;
-    return "";
+    return this.finalizeStreamText(
+      chunks,
+      gotAnyDelta,
+      rawStreamResponse,
+      delivered,
+      onProgress,
+    );
   }
 
   async chat(
@@ -246,8 +259,9 @@ export class VolcanoArkProvider implements ILlmProvider {
       options.apiUrl || "https://ark.cn-beijing.volces.com/api/v3/responses"
     ).replace(/\/$/, "");
     const apiKey = (options.apiKey || "").trim();
-    const model = (options.model || "doubao-seed-1-6-251015").trim();
+    const model = (options.model || "doubao-seed-2-1-pro-260628").trim();
     const temperature = options.temperature ?? 0.7;
+    const stream = options.stream ?? true;
 
     if (!baseUrl) throw new Error("火山引擎 API URL 未配置");
     if (!apiKey) throw new Error("火山引擎 API Key 未配置");
@@ -310,10 +324,11 @@ export class VolcanoArkProvider implements ILlmProvider {
 
     const payload = {
       model,
-      stream: true,
+      stream,
       temperature,
       input: inputMessages,
     };
+    Object.assign(payload, buildVolcanoGenerationOptions(options));
 
     const chunks: string[] = [];
     let delivered = 0;
@@ -321,10 +336,11 @@ export class VolcanoArkProvider implements ILlmProvider {
     let partialLine = "";
     let abortError: Error | null = null;
     let gotAnyDelta = false;
+    let rawStreamResponse = "";
     let cleanupAbortSignal: (() => void) | undefined;
 
     try {
-      await Zotero.HTTP.request("POST", endpoint, {
+      const response = await Zotero.HTTP.request("POST", endpoint, {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
@@ -373,6 +389,7 @@ export class VolcanoArkProvider implements ILlmProvider {
 
             try {
               const resp: string = e.target.response || "";
+              rawStreamResponse = resp;
               if (resp.length > processedLength) {
                 const slice = partialLine + resp.slice(processedLength);
                 processedLength = resp.length;
@@ -424,6 +441,8 @@ export class VolcanoArkProvider implements ILlmProvider {
           };
         },
       });
+      rawStreamResponse =
+        response?.response || response?.responseText || rawStreamResponse;
     } catch (error: any) {
       if (abortError) {
         if (isAbortError(abortError, options.abortSignal)) {
@@ -465,7 +484,13 @@ export class VolcanoArkProvider implements ILlmProvider {
       cleanupAbortSignal?.();
     }
 
-    return chunks.join("");
+    return this.finalizeStreamText(
+      chunks,
+      gotAnyDelta,
+      rawStreamResponse,
+      delivered,
+      onProgress,
+    );
   }
 
   async testConnection(options: LLMOptions): Promise<string> {
@@ -473,7 +498,7 @@ export class VolcanoArkProvider implements ILlmProvider {
       options.apiUrl || "https://ark.cn-beijing.volces.com/api/v3/responses"
     ).replace(/\/$/, "");
     const apiKey = (options.apiKey || "").trim();
-    const model = (options.model || "doubao-seed-1-6-251015").trim();
+    const model = (options.model || "doubao-seed-2-1-pro-260628").trim();
     if (!baseUrl) throw new Error("火山引擎 API URL 未配置");
     if (!apiKey) throw new Error("火山引擎 API Key 未配置");
 
@@ -509,6 +534,7 @@ export class VolcanoArkProvider implements ILlmProvider {
       ],
       max_output_tokens: 16,
       temperature: 0.1,
+      thinking: { type: "disabled" },
     };
     const payloadStr = JSON.stringify(payload, null, 2);
 
@@ -597,6 +623,22 @@ export class VolcanoArkProvider implements ILlmProvider {
         typeof rawResponse === "string" ? JSON.parse(rawResponse) : rawResponse;
       // 从 Response API 格式提取文本
       const text = this.extractVolcanoTextFromFull(json);
+      if (!text.trim()) {
+        const { APITestError } = await import("./types");
+        throw new APITestError("接口返回成功，但没有最终回答文本", {
+          errorName: "EmptyResponse",
+          errorMessage:
+            "接口返回 HTTP 200，但响应中没有 output_text。请检查模型输出限制和思考模式。",
+          statusCode: status,
+          requestUrl: url,
+          requestBody: payloadStr,
+          responseHeaders,
+          responseBody:
+            typeof rawResponse === "string"
+              ? rawResponse
+              : JSON.stringify(rawResponse),
+        });
+      }
       return `Mode: ${getConnectionTestModeLabel(testInput.mode)}\n✅ 连接成功!\n模型: ${model}\n响应: ${text}\n\n--- 原始响应 ---\n${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, null, 2)}`;
     }
 
@@ -653,12 +695,8 @@ export class VolcanoArkProvider implements ILlmProvider {
    */
   private extractVolcanoText(json: any): string {
     try {
-      // 只处理 response.output_text.delta 格式（流式响应的增量输出）
-      // 格式: {"type":"response.output_text.delta","delta":"text",...}
-      // 这是我们唯一需要提取的事件类型，其他事件要么是控制事件，要么包含重复的完整内容
-      if (json?.type === "response.output_text.delta" && json?.delta) {
-        return json.delta;
-      }
+      const responsesDelta = parseOpenAIResponsesDelta(json);
+      if (responsesDelta) return responsesDelta;
 
       // 兼容 OpenAI Chat Completions 格式的增量输出（delta.content）
       // 某些火山引擎配置可能返回这种格式
@@ -688,6 +726,9 @@ export class VolcanoArkProvider implements ILlmProvider {
    */
   private extractVolcanoTextFromFull(json: any): string {
     try {
+      const responsesText = parseOpenAIResponsesText(json);
+      if (responsesText) return responsesText;
+
       const output = json?.output;
       if (Array.isArray(output)) {
         const texts: string[] = [];
@@ -699,17 +740,6 @@ export class VolcanoArkProvider implements ILlmProvider {
               for (const c of content) {
                 if (c?.type === "output_text" && c?.text) {
                   texts.push(c.text);
-                }
-              }
-            }
-          }
-          // 也处理 reasoning 类型的 summary（用于测试连接等短输出场景）
-          if (item?.type === "reasoning" && item?.summary) {
-            const summary = item.summary;
-            if (Array.isArray(summary)) {
-              for (const s of summary) {
-                if (s?.type === "summary_text" && s?.text) {
-                  texts.push(s.text);
                 }
               }
             }
@@ -733,6 +763,29 @@ export class VolcanoArkProvider implements ILlmProvider {
     }
   }
 
+  private async finalizeStreamText(
+    chunks: string[],
+    gotAnyDelta: boolean,
+    rawStreamResponse: string,
+    delivered: number,
+    onProgress?: ProgressCb,
+  ): Promise<string> {
+    const streamed = chunks.join("");
+    if (gotAnyDelta && streamed) return streamed;
+
+    const fallback = parseOpenAIResponsesSseText(rawStreamResponse);
+    if (!fallback) return "";
+
+    if (onProgress && fallback.length > delivered) {
+      try {
+        await onProgress(fallback.slice(delivered));
+      } catch (err) {
+        ztoolkit.log("[AI-Butler] onProgress fallback error:", err);
+      }
+    }
+    return fallback;
+  }
+
   /**
    * 多文件摘要生成
    * 使用 input_file 方式发送多个 PDF 文件
@@ -747,9 +800,9 @@ export class VolcanoArkProvider implements ILlmProvider {
       options.apiUrl || "https://ark.cn-beijing.volces.com/api/v3/responses"
     ).replace(/\/$/, "");
     const apiKey = (options.apiKey || "").trim();
-    const model = (options.model || "doubao-seed-1-6-251015").trim();
+    const model = (options.model || "doubao-seed-2-1-pro-260628").trim();
     const temperature = options.temperature ?? 0.7;
-    const maxTokens = options.maxTokens ?? 8192;
+    const stream = options.stream ?? true;
 
     if (!baseUrl) throw new Error("火山引擎 API URL 未配置");
     if (!apiKey) throw new Error("火山引擎 API Key 未配置");
@@ -799,9 +852,8 @@ export class VolcanoArkProvider implements ILlmProvider {
 
     const payload = {
       model,
-      stream: true,
+      stream,
       temperature,
-      max_output_tokens: maxTokens,
       input: [
         {
           role: "system",
@@ -813,6 +865,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         },
       ],
     };
+    Object.assign(payload, buildVolcanoGenerationOptions(options));
 
     // 发送请求并处理流式响应
     const chunks: string[] = [];
@@ -821,10 +874,11 @@ export class VolcanoArkProvider implements ILlmProvider {
     let partialLine = "";
     let gotAnyDelta = false;
     let abortError: Error | null = null;
+    let rawStreamResponse = "";
     let cleanupAbortSignal: (() => void) | undefined;
 
     try {
-      await Zotero.HTTP.request("POST", endpoint, {
+      const response = await Zotero.HTTP.request("POST", endpoint, {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
@@ -860,6 +914,7 @@ export class VolcanoArkProvider implements ILlmProvider {
 
             try {
               const resp: string = e.target.response || "";
+              rawStreamResponse = resp;
               if (resp.length > processedLength) {
                 const slice = partialLine + resp.slice(processedLength);
                 processedLength = resp.length;
@@ -903,6 +958,8 @@ export class VolcanoArkProvider implements ILlmProvider {
           };
         },
       });
+      rawStreamResponse =
+        response?.response || response?.responseText || rawStreamResponse;
     } catch (error: any) {
       if (abortError || isAbortError(error, options.abortSignal)) {
         throw normalizeAbortError(abortError || error, options.abortSignal);
@@ -930,9 +987,13 @@ export class VolcanoArkProvider implements ILlmProvider {
       cleanupAbortSignal?.();
     }
 
-    const streamed = chunks.join("");
-    if (gotAnyDelta && streamed) return streamed;
-    return "";
+    return this.finalizeStreamText(
+      chunks,
+      gotAnyDelta,
+      rawStreamResponse,
+      delivered,
+      onProgress,
+    );
   }
 }
 

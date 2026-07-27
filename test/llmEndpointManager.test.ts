@@ -114,6 +114,16 @@ describe("LLMEndpointManager", function () {
     });
   });
 
+  it("uses Seed 2.1 Pro for new Volcano Ark endpoints", function () {
+    const defaults = LLMEndpointManager.providerDefaults("volcanoark");
+
+    expect(defaults).to.include({
+      apiUrl: "https://ark.cn-beijing.volces.com/api/v3/responses",
+      model: "doubao-seed-2-1-pro-260628",
+      reasoningEffort: "default",
+    });
+  });
+
   it("syncs the migrated legacy endpoint from current provider prefs", function () {
     LLMEndpointManager.saveEndpoints([
       {

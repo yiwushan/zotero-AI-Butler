@@ -36,7 +36,7 @@ pref(
   "https://ark.cn-beijing.volces.com/api/v3/responses",
 );
 pref("__prefsPrefix__.volcanoArkApiKey", "");
-pref("__prefsPrefix__.volcanoArkModel", "doubao-seed-1-8-251228");
+pref("__prefsPrefix__.volcanoArkModel", "doubao-seed-2-1-pro-260628");
 pref("__prefsPrefix__.ollamaApiUrl", "http://localhost:11434");
 pref("__prefsPrefix__.ollamaApiKey", "");
 pref("__prefsPrefix__.ollamaModel", "llama3.2");

@@ -69,7 +69,7 @@ const PROVIDER_DEFAULTS: Record<LLMEndpointProviderType, ProviderDefaults> = {
   volcanoark: {
     label: "火山方舟 (Volcano Ark)",
     apiUrl: "https://ark.cn-beijing.volces.com/api/v3/responses",
-    model: "doubao-seed-1-8-251228",
+    model: "doubao-seed-2-1-pro-260628",
     reasoningEffort: "default",
   },
   ollama: {

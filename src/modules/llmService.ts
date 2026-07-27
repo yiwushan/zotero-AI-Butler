@@ -375,7 +375,7 @@ export class LLMService {
       ).trim();
       common.apiKey = ApiKeyManager.getCurrentKey(keyManagerId);
       common.model = (
-        getPref("volcanoArkModel") || "doubao-seed-1-8-251228"
+        getPref("volcanoArkModel") || "doubao-seed-2-1-pro-260628"
       ).trim();
     } else if (id === "ollama") {
       const keyManagerId = this.mapToKeyManagerId(id);

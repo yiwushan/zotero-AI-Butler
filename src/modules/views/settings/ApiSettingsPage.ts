@@ -174,7 +174,7 @@ export class ApiSettingsPage {
               modelInput &&
               (!modelInput.value || modelInput.value.trim() === "")
             ) {
-              modelInput.value = "doubao-seed-1-8-251228";
+              modelInput.value = "doubao-seed-2-1-pro-260628";
             }
           }
           // 若切换到 Ollama 且未填写，填充本地默认
@@ -483,14 +483,14 @@ export class ApiSettingsPage {
           "volcanoark",
           "volcanoArkModel",
           getPref("volcanoArkModel") as string,
-          "doubao-seed-1-8-251228",
-          "【必填】豆包大模型名称, 如 doubao-seed-1-8-251228",
+          "doubao-seed-2-1-pro-260628",
+          "【必填】豆包大模型名称, 如 doubao-seed-2-1-pro-260628",
         ),
       );
       // 火山方舟说明
       const volcanoArkNote = this.createElement("div", {
         innerHTML:
-          "ℹ️ <strong>说明</strong>：火山方舟提供每日 200 万 tokens 免费额度，支持多模态理解。<br/>推荐模型：<code>doubao-seed-1-8-251228</code>、<code>doubao-seed-1-6-250615</code>",
+          "ℹ️ <strong>说明</strong>：火山方舟 Responses API 支持原生 PDF、多模态理解与深度思考。<br/>推荐模型：<code>doubao-seed-2-1-pro-260628</code>",
         styles: {
           padding: "10px 12px",
           backgroundColor: "#e8f5e9",
@@ -3261,7 +3261,7 @@ export class ApiSettingsPage {
       "https://ark.cn-beijing.volces.com/api/v3/responses",
     );
     setPref("volcanoArkApiKey", "");
-    setPref("volcanoArkModel", "doubao-seed-1-8-251228");
+    setPref("volcanoArkModel", "doubao-seed-2-1-pro-260628");
     setPref("ollamaApiUrl", "http://localhost:11434");
     setPref("ollamaApiKey", "");
     setPref("ollamaModel", "llama3.2");
