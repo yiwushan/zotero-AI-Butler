@@ -323,19 +323,44 @@ export class LLMService {
         (getPref("enablePromptCacheOptimization" as any) as boolean) === true,
     };
 
-    if (enableTemperature) {
+    const endpointTemperature =
+      endpoint?.providerType === "volcanoark"
+        ? endpoint.temperature
+        : undefined;
+    const requestedTemperature = generation?.temperature ?? endpointTemperature;
+    const endpointUsesTopP =
+      endpoint?.providerType === "volcanoark" && endpoint.topP !== undefined;
+    if (
+      requestedTemperature !== undefined ||
+      (enableTemperature && !endpointUsesTopP)
+    ) {
       common.temperature =
-        generation?.temperature ??
+        requestedTemperature ??
         (parseFloat((getPref("temperature") as string) || "0.7") || 0.7);
     }
-    if (enableTopP) {
+    const endpointTopP =
+      endpoint?.providerType === "volcanoark" ? endpoint.topP : undefined;
+    const requestedTopP = generation?.topP ?? endpointTopP;
+    const endpointUsesTemperature =
+      endpoint?.providerType === "volcanoark" &&
+      endpoint.temperature !== undefined;
+    if (
+      requestedTopP !== undefined ||
+      (enableTopP && !endpointUsesTemperature)
+    ) {
       common.topP =
-        generation?.topP ??
+        requestedTopP ??
         (parseFloat((getPref("topP") as string) || "1.0") || 1.0);
     }
-    if (enableMaxTokens) {
+    const endpointMaxOutputTokens =
+      endpoint?.providerType === "volcanoark"
+        ? endpoint.maxOutputTokens
+        : undefined;
+    const requestedMaxOutputTokens =
+      generation?.maxOutputTokens ?? endpointMaxOutputTokens;
+    if (requestedMaxOutputTokens !== undefined || enableMaxTokens) {
       common.maxTokens =
-        generation?.maxOutputTokens ??
+        requestedMaxOutputTokens ??
         (parseInt((getPref("maxTokens") as string) || "81920", 10) || 81920);
     }
     const reasoningEffort = resolveReasoningEffort(

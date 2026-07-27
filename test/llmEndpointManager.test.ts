@@ -4,6 +4,7 @@ import {
   LLMEndpointManager,
   type LLMEndpoint,
 } from "../src/modules/llmEndpointManager";
+import LLMService from "../src/modules/llmService";
 
 const prefKeys = [
   "llmEndpoints",
@@ -14,6 +15,13 @@ const prefKeys = [
   "maxApiSwitchCount",
   "reasoningEffort",
   "pdfProcessMode",
+  "enableTemperature",
+  "enableMaxTokens",
+  "enableTopP",
+  "temperature",
+  "topP",
+  "maxTokens",
+  "stream",
   "provider",
   "openaiApiUrl",
   "openaiApiKey",
@@ -122,6 +130,62 @@ describe("LLMEndpointManager", function () {
       model: "doubao-seed-2-1-pro-260628",
       reasoningEffort: "default",
     });
+  });
+
+  it("uses the recommended academic tuning for new Volcano endpoints", function () {
+    const endpoint = LLMEndpointManager.createEndpoint("volcanoark");
+
+    expect(endpoint).to.include({
+      doubaoTuningPreset: "academic",
+      reasoningEffort: "low",
+      temperature: 0.2,
+    });
+    expect(endpoint.maxOutputTokens).to.equal(undefined);
+  });
+
+  it("applies Doubao tuning presets without imposing an output cap", function () {
+    const endpoint = LLMEndpointManager.createEndpoint("volcanoark");
+    endpoint.topP = 0.9;
+
+    LLMEndpointManager.applyDoubaoTuningPreset(endpoint, "deep-reasoning");
+    expect(endpoint).to.include({
+      reasoningEffort: "high",
+      temperature: 0.2,
+    });
+    expect(endpoint.maxOutputTokens).to.equal(undefined);
+    expect(endpoint.topP).to.equal(undefined);
+
+    LLMEndpointManager.applyDoubaoTuningPreset(endpoint, "model-default");
+    expect(endpoint.reasoningEffort).to.equal("default");
+    expect(endpoint.temperature).to.equal(undefined);
+  });
+
+  it("passes endpoint-specific Doubao tuning into request options", function () {
+    Zotero.Prefs.set(prefName("enableTemperature"), false, true);
+    Zotero.Prefs.set(prefName("enableMaxTokens"), false, true);
+    Zotero.Prefs.set(prefName("enableTopP"), true, true);
+    Zotero.Prefs.set(prefName("topP"), "0.7", true);
+    const endpoint = LLMEndpointManager.createEndpoint("volcanoark");
+
+    const academic = LLMService.buildOptions(endpoint);
+    expect(academic.temperature).to.equal(0.2);
+    expect(academic.topP).to.equal(undefined);
+    expect(academic.maxTokens).to.equal(undefined);
+
+    LLMEndpointManager.applyDoubaoTuningPreset(endpoint, "model-default");
+    Zotero.Prefs.set(prefName("enableTopP"), false, true);
+    const modelDefault = LLMService.buildOptions(endpoint);
+    expect(modelDefault.temperature).to.equal(undefined);
+    expect(modelDefault.topP).to.equal(undefined);
+    expect(modelDefault.maxTokens).to.equal(undefined);
+
+    endpoint.temperature = undefined;
+    endpoint.topP = 0.9;
+    Zotero.Prefs.set(prefName("enableTemperature"), true, true);
+    Zotero.Prefs.set(prefName("temperature"), "0.7", true);
+    const topPOnly = LLMService.buildOptions(endpoint);
+    expect(topPOnly.topP).to.equal(0.9);
+    expect(topPOnly.temperature).to.equal(undefined);
   });
 
   it("syncs the migrated legacy endpoint from current provider prefs", function () {

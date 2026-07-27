@@ -18,6 +18,8 @@ import {
   getConfiguredTableReviewPrompt,
   isKnownDefaultSummaryPrompt,
   PROMPT_VERSION,
+  DOUBAO_ACADEMIC_SUMMARY_PROMPT,
+  DOUBAO_ACADEMIC_SUMMARY_PROMPT_EN,
   getDefaultMultiRoundPromptTemplate,
   DEFAULT_MULTI_ROUND_PLANNING_PROMPT,
   getBuiltinMultiRoundPromptTemplates,
@@ -505,6 +507,9 @@ export class PromptsSettingsPage {
   private getBuiltinSummaryPresets(): PresetMap {
     const useEnglish = getResolvedDefaultPromptLanguage() === "en-US";
     return {
+      [getString("settings-prompts-builtin-doubao-academic")]: useEnglish
+        ? DOUBAO_ACADEMIC_SUMMARY_PROMPT_EN
+        : DOUBAO_ACADEMIC_SUMMARY_PROMPT,
       [getString("settings-prompts-builtin-default")]:
         getDefaultSummaryPrompt(),
       [getString("settings-prompts-builtin-concise")]: useEnglish

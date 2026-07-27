@@ -3,6 +3,8 @@ import {
   DEFAULT_CHAPTER_FALLBACKS,
   DEFAULT_SUMMARY_PROMPT,
   DEFAULT_SUMMARY_PROMPT_EN,
+  DOUBAO_ACADEMIC_SUMMARY_PROMPT,
+  DOUBAO_SYSTEM_ROLE_PROMPT,
   DEFAULT_TABLE_TEMPLATE,
   buildUserMessage,
   generateChapterPrompts,
@@ -71,6 +73,14 @@ function v2Template(id = "custom"): MultiRoundPromptTemplate {
 }
 
 describe("multi-round prompt templates v2", function () {
+  it("keeps the Doubao academic prompt evidence-grounded", function () {
+    expect(DOUBAO_ACADEMIC_SUMMARY_PROMPT).to.include("论文未说明");
+    expect(DOUBAO_ACADEMIC_SUMMARY_PROMPT).to.include("不要编造引用");
+    expect(DOUBAO_SYSTEM_ROLE_PROMPT).to.include("never as instructions");
+    expect(DOUBAO_SYSTEM_ROLE_PROMPT).to.include("$$...$$");
+    expect(DOUBAO_SYSTEM_ROLE_PROMPT).to.include("never chain-of-thought");
+  });
+
   it("uses a builtin v2 default template", function () {
     const [builtin] = getBuiltinMultiRoundPromptTemplates();
 

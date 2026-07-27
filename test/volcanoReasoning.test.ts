@@ -24,6 +24,16 @@ describe("Volcano Ark reasoning options", function () {
     });
   });
 
+  it("sends sampling parameters only when explicitly configured", function () {
+    expect(buildVolcanoGenerationOptions({})).to.not.have.keys(
+      "temperature",
+      "top_p",
+    );
+    expect(
+      buildVolcanoGenerationOptions({ temperature: 0.2, topP: 0.9 }),
+    ).to.deep.equal({ temperature: 0.2, top_p: 0.9 });
+  });
+
   it("builds the native thinking payload", function () {
     expect(
       buildVolcanoGenerationOptions({ reasoningEffort: "low" }),

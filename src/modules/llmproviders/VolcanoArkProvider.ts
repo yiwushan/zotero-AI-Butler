@@ -6,7 +6,10 @@ import {
   LLMProviderCapabilities,
   ProgressCb,
 } from "./types";
-import { SYSTEM_ROLE_PROMPT, buildUserMessage } from "../../utils/prompts";
+import {
+  DOUBAO_SYSTEM_ROLE_PROMPT,
+  buildUserMessage,
+} from "../../utils/prompts";
 import { getRequestTimeoutMs } from "./shared/llmutils";
 import {
   getConnectionTestInput,
@@ -58,7 +61,13 @@ export class VolcanoArkProvider implements ILlmProvider {
     supportsPdfBase64: true,
     maxPdfFiles: 20,
     supportsSystemPrompt: true,
-    supportedParams: ["temperature", "maxTokens", "stream", "reasoningEffort"],
+    supportedParams: [
+      "temperature",
+      "topP",
+      "maxTokens",
+      "stream",
+      "reasoningEffort",
+    ],
   };
 
   async generateSummary(
@@ -73,7 +82,6 @@ export class VolcanoArkProvider implements ILlmProvider {
     ).replace(/\/$/, "");
     const apiKey = (options.apiKey || "").trim();
     const model = (options.model || "doubao-seed-2-1-pro-260628").trim();
-    const temperature = options.temperature ?? 0.7;
     const stream = options.stream ?? true;
 
     if (!baseUrl) throw new Error(providerMissingApiUrl("Volcano Ark"));
@@ -91,11 +99,10 @@ export class VolcanoArkProvider implements ILlmProvider {
       payload = {
         model,
         stream,
-        temperature,
         input: [
           {
             role: "system",
-            content: SYSTEM_ROLE_PROMPT,
+            content: DOUBAO_SYSTEM_ROLE_PROMPT,
           },
           {
             role: "user",
@@ -119,11 +126,10 @@ export class VolcanoArkProvider implements ILlmProvider {
       payload = {
         model,
         stream,
-        temperature,
         input: [
           {
             role: "system",
-            content: SYSTEM_ROLE_PROMPT,
+            content: DOUBAO_SYSTEM_ROLE_PROMPT,
           },
           {
             role: "user",
@@ -275,7 +281,6 @@ export class VolcanoArkProvider implements ILlmProvider {
     ).replace(/\/$/, "");
     const apiKey = (options.apiKey || "").trim();
     const model = (options.model || "doubao-seed-2-1-pro-260628").trim();
-    const temperature = options.temperature ?? 0.7;
     const stream = options.stream ?? true;
 
     if (!baseUrl) throw new Error(providerMissingApiUrl("Volcano Ark"));
@@ -291,7 +296,7 @@ export class VolcanoArkProvider implements ILlmProvider {
     const inputMessages: any[] = [
       {
         role: "system",
-        content: SYSTEM_ROLE_PROMPT,
+        content: DOUBAO_SYSTEM_ROLE_PROMPT,
       },
     ];
 
@@ -340,7 +345,6 @@ export class VolcanoArkProvider implements ILlmProvider {
     const payload = {
       model,
       stream,
-      temperature,
       input: inputMessages,
     };
     Object.assign(payload, buildVolcanoGenerationOptions(options));
@@ -542,7 +546,7 @@ export class VolcanoArkProvider implements ILlmProvider {
       input: [
         {
           role: "system",
-          content: SYSTEM_ROLE_PROMPT,
+          content: DOUBAO_SYSTEM_ROLE_PROMPT,
         },
         {
           role: "user",
@@ -822,7 +826,6 @@ export class VolcanoArkProvider implements ILlmProvider {
     ).replace(/\/$/, "");
     const apiKey = (options.apiKey || "").trim();
     const model = (options.model || "doubao-seed-2-1-pro-260628").trim();
-    const temperature = options.temperature ?? 0.7;
     const stream = options.stream ?? true;
 
     if (!baseUrl) throw new Error(providerMissingApiUrl("Volcano Ark"));
@@ -874,11 +877,10 @@ export class VolcanoArkProvider implements ILlmProvider {
     const payload = {
       model,
       stream,
-      temperature,
       input: [
         {
           role: "system",
-          content: SYSTEM_ROLE_PROMPT,
+          content: DOUBAO_SYSTEM_ROLE_PROMPT,
         },
         {
           role: "user",

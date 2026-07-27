@@ -8,6 +8,7 @@ import {
   type LLMEndpoint,
   type LLMEndpointProviderType,
   type LLMRoutingStrategy,
+  type LLMDoubaoTuningPreset,
 } from "../../llmEndpointManager";
 import type { LLMModelInfo } from "../../llmproviders/types";
 import {
@@ -79,6 +80,63 @@ function reasoningEffortOptions(
   ];
 }
 
+function doubaoTuningPresetOptions(): Array<{
+  value: string;
+  label: string;
+}> {
+  return [
+    { value: "academic", label: t("endpoint-doubao-preset-academic") },
+    {
+      value: "deep-reasoning",
+      label: t("endpoint-doubao-preset-deep-reasoning"),
+    },
+    { value: "fast", label: t("endpoint-doubao-preset-fast") },
+    { value: "creative", label: t("endpoint-doubao-preset-creative") },
+    {
+      value: "model-default",
+      label: t("endpoint-doubao-preset-model-default"),
+    },
+    { value: "custom", label: t("endpoint-doubao-preset-custom") },
+  ];
+}
+
+function doubaoTemperatureOptions(): Array<{
+  value: string;
+  label: string;
+}> {
+  return [
+    { value: "default", label: t("endpoint-doubao-value-model-default") },
+    { value: "0.1", label: "0.1" },
+    { value: "0.2", label: t("endpoint-doubao-temperature-recommended") },
+    { value: "0.4", label: "0.4" },
+    { value: "0.7", label: "0.7" },
+    { value: "0.8", label: "0.8" },
+  ];
+}
+
+function doubaoMaxOutputOptions(): Array<{ value: string; label: string }> {
+  return [
+    {
+      value: "default",
+      label: t("endpoint-doubao-max-output-recommended"),
+    },
+    { value: "16384", label: "16,384" },
+    { value: "32768", label: "32,768" },
+    { value: "65536", label: "65,536" },
+    { value: "81920", label: "81,920" },
+  ];
+}
+
+function doubaoTopPOptions(): Array<{ value: string; label: string }> {
+  return [
+    { value: "default", label: t("endpoint-doubao-top-p-recommended") },
+    { value: "0.7", label: "0.7" },
+    { value: "0.8", label: "0.8" },
+    { value: "0.9", label: "0.9" },
+    { value: "1", label: "1.0" },
+  ];
+}
+
 function localizedPdfProcessModeLabel(mode: string): string {
   if (mode === "text") return t("endpoint-pdf-text-short");
   if (mode === "mineru") return t("endpoint-pdf-mineru-short");
@@ -86,16 +144,30 @@ function localizedPdfProcessModeLabel(mode: string): string {
   return t("endpoint-pdf-base64-short");
 }
 
-function pdfProcessModeOptions(): Array<{ value: string; label: string }> {
+function pdfProcessModeOptions(
+  providerType?: LLMEndpointProviderType,
+): Array<{ value: string; label: string }> {
   const globalLabel = localizedPdfProcessModeLabel(
     LLMEndpointManager.getGlobalPdfProcessMode(),
   );
   return [
     { value: "global", label: t("endpoint-pdf-global", { mode: globalLabel }) },
-    { value: "base64", label: t("endpoint-pdf-base64") },
+    {
+      value: "base64",
+      label:
+        providerType === "volcanoark"
+          ? t("endpoint-pdf-base64-doubao")
+          : t("endpoint-pdf-base64"),
+    },
     { value: "text", label: t("endpoint-pdf-text") },
     { value: "mineru", label: t("endpoint-pdf-mineru") },
-    { value: "markdown", label: t("endpoint-pdf-markdown") },
+    {
+      value: "markdown",
+      label:
+        providerType === "volcanoark"
+          ? t("endpoint-pdf-markdown-doubao")
+          : t("endpoint-pdf-markdown"),
+    },
   ];
 }
 
@@ -746,6 +818,9 @@ export class EndpointSettingsPanel {
     details.appendChild(this.renderApiUrlField(endpoint));
     details.appendChild(this.renderApiKeyField(endpoint));
     details.appendChild(this.renderModelField(endpoint));
+    if (endpoint.providerType === "volcanoark") {
+      details.appendChild(this.renderDoubaoTuningField(endpoint));
+    }
     details.appendChild(this.renderPdfProcessModeField(endpoint));
     if (endpointSupportsReasoningEffort(endpoint)) {
       details.appendChild(this.renderReasoningEffortField(endpoint));
@@ -962,7 +1037,7 @@ export class EndpointSettingsPanel {
 
     const select = createSelect(
       `endpoint-${endpoint.id}-pdfProcessMode`,
-      pdfProcessModeOptions(),
+      pdfProcessModeOptions(endpoint.providerType),
       value,
       (newValue) => {
         endpoint.pdfProcessMode =
@@ -1030,6 +1105,104 @@ export class EndpointSettingsPanel {
     );
   }
 
+  private renderDoubaoTuningField(endpoint: LLMEndpoint): HTMLElement {
+    const document = doc();
+    const wrapper = document.createElement("div");
+    Object.assign(wrapper.style, {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+      gap: "12px",
+    });
+
+    const addSelect = (labelText: string, select: HTMLElement): void => {
+      const field = document.createElement("div");
+      const label = document.createElement("label");
+      label.textContent = labelText;
+      Object.assign(label.style, {
+        display: "block",
+        marginBottom: "6px",
+        color: "var(--ai-text-muted)",
+        fontSize: "12px",
+        fontWeight: "600",
+      });
+      field.appendChild(label);
+      field.appendChild(select);
+      wrapper.appendChild(field);
+    };
+
+    const preset = LLMEndpointManager.normalizeDoubaoTuningPreset(
+      endpoint.doubaoTuningPreset,
+    );
+    endpoint.doubaoTuningPreset = preset;
+    const presetSelect = createSelect(
+      `endpoint-${endpoint.id}-doubaoPreset`,
+      doubaoTuningPresetOptions(),
+      preset,
+      (newValue) => {
+        LLMEndpointManager.applyDoubaoTuningPreset(
+          endpoint,
+          newValue as LLMDoubaoTuningPreset,
+        );
+        this.persist();
+        this.render();
+      },
+    );
+    addSelect(t("endpoint-doubao-preset-label"), presetSelect);
+
+    const temperatureSelect = createSelect(
+      `endpoint-${endpoint.id}-doubaoTemperature`,
+      doubaoTemperatureOptions(),
+      endpoint.temperature === undefined
+        ? "default"
+        : String(endpoint.temperature),
+      (newValue) => {
+        endpoint.temperature =
+          newValue === "default" ? undefined : Number(newValue);
+        if (newValue !== "default") endpoint.topP = undefined;
+        endpoint.doubaoTuningPreset = "custom";
+        this.persist();
+        this.render();
+      },
+    );
+    addSelect(t("endpoint-doubao-temperature-label"), temperatureSelect);
+
+    const topPSelect = createSelect(
+      `endpoint-${endpoint.id}-doubaoTopP`,
+      doubaoTopPOptions(),
+      endpoint.topP === undefined ? "default" : String(endpoint.topP),
+      (newValue) => {
+        endpoint.topP = newValue === "default" ? undefined : Number(newValue);
+        if (newValue !== "default") endpoint.temperature = undefined;
+        endpoint.doubaoTuningPreset = "custom";
+        this.persist();
+        this.render();
+      },
+    );
+    addSelect(t("endpoint-doubao-top-p-label"), topPSelect);
+
+    const maxOutputSelect = createSelect(
+      `endpoint-${endpoint.id}-doubaoMaxOutput`,
+      doubaoMaxOutputOptions(),
+      endpoint.maxOutputTokens === undefined
+        ? "default"
+        : String(endpoint.maxOutputTokens),
+      (newValue) => {
+        endpoint.maxOutputTokens =
+          newValue === "default" ? undefined : Number(newValue);
+        endpoint.doubaoTuningPreset = "custom";
+        this.persist();
+        this.render();
+      },
+    );
+    addSelect(t("endpoint-doubao-max-output-label"), maxOutputSelect);
+
+    return createFormGroup(
+      t("endpoint-doubao-tuning-label"),
+      wrapper,
+      fieldDescription(t("endpoint-doubao-tuning-help")),
+    );
+  }
+
   private renderReasoningEffortField(endpoint: LLMEndpoint): HTMLElement {
     const defaults = LLMEndpointManager.providerDefaults(endpoint.providerType);
     let value = normalizeReasoningEffortSetting(
@@ -1051,7 +1224,11 @@ export class EndpointSettingsPanel {
           newValue,
           "default",
         );
+        if (endpoint.providerType === "volcanoark") {
+          endpoint.doubaoTuningPreset = "custom";
+        }
         this.persist();
+        this.render();
       },
     );
 
