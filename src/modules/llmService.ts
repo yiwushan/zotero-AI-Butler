@@ -7,15 +7,19 @@
  * - 执行密钥轮换与重试
  * - 返回统一 LLMResponse
  */
+import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
-import { getDefaultSummaryPrompt } from "../utils/prompts";
+import { getConfiguredSummaryPrompt } from "../utils/prompts";
 import { ApiKeyManager, type ProviderId } from "./apiKeyManager";
 import {
   LLMEndpointManager,
   type LLMEndpoint,
   type LLMPdfProcessMode,
 } from "./llmEndpointManager";
+import { ContentExtractor } from "./contentExtractor";
 import { PDFExtractor } from "./pdfExtractor";
+import { ParsedMarkdownExtractor } from "./parsedMarkdownExtractor";
+import type { TaskProgressMeta } from "./taskQueue";
 import { ProviderRegistry } from "./llmproviders/ProviderRegistry";
 import "./llmproviders";
 import type { ILlmProvider, PdfFileInfo } from "./llmproviders/ILlmProvider";
@@ -24,6 +28,7 @@ import {
   normalizeReasoningEffortSetting,
   resolveReasoningEffort,
 } from "./llmproviders/shared/reasoning";
+import { sanitizeLLMOutputText } from "./llmproviders/shared/outputSanitizer";
 import {
   isAbortError,
   normalizeAbortError,
@@ -49,7 +54,12 @@ export type LLMTask =
   | "image-summary"
   | "custom";
 
-export type LLMContentPolicy = "auto" | "text" | "pdf-base64" | "mineru";
+export type LLMContentPolicy =
+  | "auto"
+  | "text"
+  | "pdf-base64"
+  | "mineru"
+  | "markdown";
 export type LLMAttachmentMode = "default" | "all";
 
 export type LLMTextContent = {
@@ -68,6 +78,13 @@ export type LLMZoteroItemContent = {
 
 export type LLMPdfAttachmentContent = {
   kind: "pdf-attachment";
+  item?: Zotero.Item;
+  attachment: Zotero.Item;
+  policy?: LLMContentPolicy;
+};
+
+export type LLMAnalyzableAttachmentContent = {
+  kind: "analyzable-attachment";
   item?: Zotero.Item;
   attachment: Zotero.Item;
   policy?: LLMContentPolicy;
@@ -95,6 +112,7 @@ export type LLMContentInput =
   | LLMTextContent
   | LLMZoteroItemContent
   | LLMPdfAttachmentContent
+  | LLMAnalyzableAttachmentContent
   | LLMPdfFilesContent
   | LLMLegacyContent;
 
@@ -108,12 +126,20 @@ export type LLMGenerationOptions = {
   vendorOptions?: Record<string, unknown>;
 };
 
+export type LLMLifecycleEvent = TaskProgressMeta & {
+  progress?: number;
+  message?: string;
+};
+
+export type LLMLifecycleCallback = (event: LLMLifecycleEvent) => void;
+
 export type LLMTransportOptions = {
   stream?: boolean;
   timeoutMs?: number;
   retry?: boolean;
   keyRotation?: boolean;
   abortSignal?: LLMAbortSignal;
+  onStatus?: LLMLifecycleCallback;
 };
 
 export type LLMGenerateRequest = {
@@ -186,7 +212,7 @@ export class LLMApiExhaustedError extends Error {
   public readonly providerId?: string;
 
   constructor(attempts: number, lastError?: Error) {
-    super(lastError?.message || "All configured LLM endpoints failed.");
+    super(lastError?.message || getString("llm-error-all-endpoints-failed"));
     this.name = "LLMApiExhaustedError";
     this.attempts = attempts;
     this.lastError = lastError;
@@ -229,7 +255,9 @@ export class LLMService {
       ProviderRegistry.get(providerId) || ProviderRegistry.get("openai");
     if (!impl) {
       const list = ProviderRegistry.list().join(", ");
-      const msg = `未知的供应商: ${providerId}。可用: ${list}`;
+      const msg = getString("llm-error-unknown-provider-with-list", {
+        args: { provider: providerId, list },
+      });
       this.notifyError(msg);
       throw new Error(msg);
     }
@@ -471,10 +499,16 @@ export class LLMService {
       .toLowerCase();
     const impl = ProviderRegistry.get(id) || ProviderRegistry.get("openai");
     if (!impl) {
-      throw new Error(`未知的供应商: ${id}`);
+      throw new Error(
+        getString("llm-error-unknown-provider", { args: { provider: id } }),
+      );
     }
     if (typeof impl.listModels !== "function") {
-      throw new Error(`Provider ${id} 暂不支持获取模型列表`);
+      throw new Error(
+        getString("llm-error-model-list-unsupported", {
+          args: { provider: id },
+        }),
+      );
     }
 
     const options = this.buildOptions(
@@ -514,10 +548,16 @@ export class LLMService {
   private static getRunnableEndpoint(endpointId: string): LLMEndpoint {
     const endpoint = LLMEndpointManager.getEndpoint(endpointId);
     if (!endpoint) {
-      throw new Error(`LLM endpoint not found: ${endpointId}`);
+      throw new Error(
+        getString("llm-error-endpoint-not-found", { args: { endpointId } }),
+      );
     }
     if (!endpoint.enabled) {
-      throw new Error(`LLM endpoint is disabled: ${endpoint.name}`);
+      throw new Error(
+        getString("llm-error-endpoint-disabled", {
+          args: { endpoint: endpoint.name },
+        }),
+      );
     }
     return endpoint;
   }
@@ -527,7 +567,13 @@ export class LLMService {
     if (!provider) {
       const list = ProviderRegistry.list().join(", ");
       throw new Error(
-        `Unknown provider type for endpoint "${endpoint.name}": ${endpoint.providerType}. Available: ${list}`,
+        getString("llm-error-unknown-provider-type", {
+          args: {
+            endpoint: endpoint.name,
+            provider: endpoint.providerType,
+            available: list,
+          },
+        }),
       );
     }
     return provider;
@@ -575,6 +621,17 @@ export class LLMService {
   ): Promise<LLMResponse> {
     const provider = this.getProviderForEndpoint(endpoint);
     const warnings: string[] = [];
+    request.transport?.onStatus?.({
+      stage: "llm-preparing",
+      label: getString("progress-llm-preparing"),
+      message: getString("progress-llm-preparing-message"),
+      progress: 40,
+      endpointName: endpoint.name,
+      model: endpoint.model,
+      detail: getString("progress-llm-endpoint-detail", {
+        args: { provider: endpoint.providerType, endpoint: endpoint.name },
+      }),
+    });
     throwIfAborted(request.transport?.abortSignal);
     const resolved = await this.resolveContent(
       provider,
@@ -582,6 +639,14 @@ export class LLMService {
       warnings,
       true,
       endpoint,
+      request.transport?.onStatus
+        ? (message, progress, meta) =>
+            request.transport?.onStatus?.({
+              ...(meta || {}),
+              message,
+              progress,
+            })
+        : undefined,
     );
     throwIfAborted(request.transport?.abortSignal);
     const options = this.buildOptions(
@@ -589,11 +654,55 @@ export class LLMService {
       request.generation,
       request.transport,
     );
+    request.transport?.onStatus?.({
+      stage: "llm-uploading",
+      label: getString("progress-llm-uploading"),
+      message: getString("progress-llm-uploading-message"),
+      progress: 42,
+      endpointName: endpoint.name,
+      model: options.model || endpoint.model,
+      detail: getString("progress-llm-endpoint-model-detail", {
+        args: {
+          provider: endpoint.providerType,
+          endpoint: endpoint.name,
+          model: options.model || endpoint.model || "unknown",
+        },
+      }),
+    });
+    let sawFirstChunk = false;
+    const progressProxy: ProgressCb | undefined = request.onProgress
+      ? async (chunk: string) => {
+          if (!sawFirstChunk) {
+            sawFirstChunk = true;
+            request.transport?.onStatus?.({
+              stage: "llm-streaming",
+              label: getString("progress-llm-streaming"),
+              message: getString("progress-llm-streaming-message"),
+              progress: 50,
+              endpointName: endpoint.name,
+              model: options.model || endpoint.model,
+              detail: getString("progress-llm-first-chunk-detail"),
+            });
+          }
+          await request.onProgress?.(chunk);
+        }
+      : undefined;
+    request.transport?.onStatus?.({
+      stage: "llm-waiting",
+      label: getString("progress-llm-waiting"),
+      message: getString("progress-llm-waiting-message"),
+      progress: 45,
+      endpointName: endpoint.name,
+      model: options.model || endpoint.model,
+      detail: getString("progress-llm-waiting-detail"),
+    });
     let text: string;
     if (resolved.mode === "multi-file") {
       if (typeof provider.generateMultiFileSummary !== "function") {
         throw new Error(
-          `Provider ${endpoint.providerType} does not support multi-file generation`,
+          getString("llm-error-provider-multi-file-unsupported", {
+            args: { provider: endpoint.providerType },
+          }),
         );
       }
       try {
@@ -601,7 +710,7 @@ export class LLMService {
           resolved.files,
           prompt,
           options,
-          request.onProgress,
+          progressProxy,
         );
       } catch (error: unknown) {
         if (isAbortError(error, options.abortSignal)) {
@@ -616,7 +725,7 @@ export class LLMService {
           resolved.isBase64,
           prompt,
           options,
-          request.onProgress,
+          progressProxy,
         );
       } catch (error: unknown) {
         if (isAbortError(error, options.abortSignal)) {
@@ -625,6 +734,17 @@ export class LLMService {
         throw this.toApiCallError(endpoint, error);
       }
     }
+    request.transport?.onStatus?.({
+      stage: "llm-streaming",
+      label: getString("progress-llm-complete"),
+      message: getString("progress-llm-complete-message"),
+      progress: 78,
+      endpointName: endpoint.name,
+      model: options.model || endpoint.model,
+      detail: getString("progress-llm-complete-detail", {
+        args: { count: text.length },
+      }),
+    });
     return this.toResponse(
       text,
       endpoint.providerType,
@@ -697,6 +817,17 @@ export class LLMService {
   ): Promise<LLMResponse> {
     const provider = this.getProviderForEndpoint(endpoint);
     const warnings: string[] = [];
+    request.transport?.onStatus?.({
+      stage: "llm-preparing",
+      label: getString("progress-llm-preparing"),
+      message: getString("progress-llm-preparing-message"),
+      progress: 40,
+      endpointName: endpoint.name,
+      model: endpoint.model,
+      detail: getString("progress-llm-endpoint-detail", {
+        args: { provider: endpoint.providerType, endpoint: endpoint.name },
+      }),
+    });
     throwIfAborted(request.transport?.abortSignal);
     const resolved = await this.resolveContent(
       provider,
@@ -704,16 +835,66 @@ export class LLMService {
       warnings,
       false,
       endpoint,
+      request.transport?.onStatus
+        ? (message, progress, meta) =>
+            request.transport?.onStatus?.({
+              ...(meta || {}),
+              message,
+              progress,
+            })
+        : undefined,
     );
     throwIfAborted(request.transport?.abortSignal);
     if (resolved.mode !== "single") {
-      throw new Error("Chat requests do not support multi-file input.");
+      throw new Error(getString("llm-error-chat-multi-file-unsupported"));
     }
     const options = this.buildOptions(
       endpoint,
       request.generation,
       request.transport,
     );
+    request.transport?.onStatus?.({
+      stage: "llm-uploading",
+      label: getString("progress-llm-uploading"),
+      message: getString("progress-llm-uploading-message"),
+      progress: 42,
+      endpointName: endpoint.name,
+      model: options.model || endpoint.model,
+      detail: getString("progress-llm-endpoint-model-detail", {
+        args: {
+          provider: endpoint.providerType,
+          endpoint: endpoint.name,
+          model: options.model || endpoint.model || "unknown",
+        },
+      }),
+    });
+    let sawFirstChunk = false;
+    const progressProxy: ProgressCb | undefined = request.onProgress
+      ? async (chunk: string) => {
+          if (!sawFirstChunk) {
+            sawFirstChunk = true;
+            request.transport?.onStatus?.({
+              stage: "llm-streaming",
+              label: getString("progress-llm-streaming"),
+              message: getString("progress-llm-streaming-message"),
+              progress: 50,
+              endpointName: endpoint.name,
+              model: options.model || endpoint.model,
+              detail: getString("progress-llm-first-chunk-detail"),
+            });
+          }
+          await request.onProgress?.(chunk);
+        }
+      : undefined;
+    request.transport?.onStatus?.({
+      stage: "llm-waiting",
+      label: getString("progress-llm-waiting"),
+      message: getString("progress-llm-waiting-message"),
+      progress: 45,
+      endpointName: endpoint.name,
+      model: options.model || endpoint.model,
+      detail: getString("progress-llm-waiting-detail"),
+    });
     let text: string;
     try {
       text = await provider.chat(
@@ -721,7 +902,7 @@ export class LLMService {
         resolved.isBase64,
         request.conversation,
         options,
-        request.onProgress,
+        progressProxy,
       );
     } catch (error: unknown) {
       if (isAbortError(error, options.abortSignal)) {
@@ -729,6 +910,17 @@ export class LLMService {
       }
       throw this.toApiCallError(endpoint, error);
     }
+    request.transport?.onStatus?.({
+      stage: "llm-streaming",
+      label: getString("progress-llm-complete"),
+      message: getString("progress-llm-complete-message"),
+      progress: 78,
+      endpointName: endpoint.name,
+      model: options.model || endpoint.model,
+      detail: getString("progress-llm-complete-detail", {
+        args: { count: text.length },
+      }),
+    });
     return this.toResponse(
       text,
       endpoint.providerType,
@@ -799,7 +991,11 @@ export class LLMService {
         let text: string;
         if (resolved.mode === "multi-file") {
           if (typeof provider.generateMultiFileSummary !== "function") {
-            throw new Error(`Provider ${providerId} 不支持多文件摘要生成`);
+            throw new Error(
+              getString("llm-error-multifile-unsupported", {
+                args: { provider: providerId },
+              }),
+            );
           }
           text = await provider.generateMultiFileSummary(
             resolved.files,
@@ -832,7 +1028,7 @@ export class LLMService {
       }
     }
 
-    throw lastError || new Error("所有 API 密钥均已耗尽");
+    throw lastError || new Error(getString("llm-error-api-keys-exhausted"));
   }
 
   private static toResponse(
@@ -850,8 +1046,14 @@ export class LLMService {
     const warnings = endpoint
       ? maybeWarnings || []
       : (optionsOrWarnings as string[]);
+    const sanitizedText = sanitizeLLMOutputText(text);
+    if (sanitizedText !== text) {
+      ztoolkit.log(
+        "[AI-Butler] Removed hidden reasoning block(s) from LLM output.",
+      );
+    }
     return {
-      text,
+      text: sanitizedText,
       providerId,
       endpointId: endpoint?.id,
       providerName:
@@ -868,6 +1070,11 @@ export class LLMService {
     warnings: string[],
     allowMultiFile: boolean,
     endpoint?: LLMEndpoint,
+    statusCallback?: (
+      message: string,
+      progress: number,
+      meta?: TaskProgressMeta,
+    ) => void,
   ): Promise<ResolvedContent> {
     if (input.kind === "text") {
       return { mode: "single", content: input.text, isBase64: false, warnings };
@@ -895,11 +1102,26 @@ export class LLMService {
         capabilities,
         warnings,
         allowMultiFile,
+        statusCallback,
       );
     }
 
     if (input.kind === "pdf-attachment") {
-      return this.resolvePdfAttachmentContent(input, policy, warnings);
+      return this.resolvePdfAttachmentContent(
+        input,
+        policy,
+        warnings,
+        statusCallback,
+      );
+    }
+
+    if (input.kind === "analyzable-attachment") {
+      return this.resolveAnalyzableAttachmentContent(
+        input,
+        policy,
+        warnings,
+        statusCallback,
+      );
     }
 
     return this.resolvePdfFilesContent(
@@ -925,6 +1147,7 @@ export class LLMService {
     let policy: LLMContentPolicy;
     if (rawMode === "text") policy = "text";
     else if (rawMode === "mineru") policy = "mineru";
+    else if (rawMode === "markdown") policy = "markdown";
     else if (rawMode === "auto") policy = "pdf-base64";
     else {
       policy = "pdf-base64";
@@ -940,58 +1163,109 @@ export class LLMService {
     capabilities: LLMProviderCapabilities,
     warnings: string[],
     allowMultiFile: boolean,
+    statusCallback?: (
+      message: string,
+      progress: number,
+      meta?: TaskProgressMeta,
+    ) => void,
   ): Promise<ResolvedContent> {
     const attachmentMode =
       input.attachmentMode ||
       (getPref("pdfAttachmentMode") as string) ||
       "default";
     const maxAttachments = Math.max(input.maxAttachments || Infinity, 1);
+    const pdfAttachments = await PDFExtractor.getAllPdfAttachments(input.item);
+    const hasPdf = pdfAttachments.length > 0;
+
+    if (policy === "markdown") {
+      const parsed = await ParsedMarkdownExtractor.extractFromItem(
+        input.item,
+        pdfAttachments[0],
+      );
+      warnings.push(
+        getString("llm-warning-parsed-markdown-used", {
+          args: { source: parsed.sourceLabel },
+        }),
+      );
+      return {
+        mode: "single",
+        content: this.normalizeMarkdown(parsed.markdown),
+        isBase64: false,
+        warnings,
+      };
+    }
+
+    if (!hasPdf) {
+      const snapshotContent =
+        await ContentExtractor.extractAnalyzableContentFromItem(
+          input.item,
+          false,
+          policy === "mineru" ? "mineru" : "text",
+          statusCallback,
+        );
+      if (snapshotContent.kind === "web-snapshot") {
+        warnings.push(getString("llm-warning-web-snapshot-used"));
+      }
+      return {
+        mode: "single",
+        content: this.normalizeText(snapshotContent.content),
+        isBase64: false,
+        warnings,
+      };
+    }
 
     if (allowMultiFile && policy === "pdf-base64" && attachmentMode === "all") {
-      const allPdfs = await PDFExtractor.getAllPdfAttachments(input.item);
-      if (allPdfs.length > 1) {
+      if (pdfAttachments.length > 1) {
         if (
           capabilities.maxPdfFiles <= 1 ||
           typeof provider.generateMultiFileSummary !== "function"
         ) {
-          throw new Error(
-            "当前 Provider 不支持多 PDF 上传。请将“多 PDF 附件模式”切换为“仅默认 PDF”，或更换支持多 PDF 的 Provider。",
-          );
+          throw new Error(getString("llm-error-multi-pdf-unsupported"));
         }
 
         const limit = Math.min(maxAttachments, capabilities.maxPdfFiles);
-        const selected = allPdfs.slice(0, limit);
-        if (allPdfs.length > selected.length) {
+        const selected = pdfAttachments.slice(0, limit);
+        if (pdfAttachments.length > selected.length) {
           warnings.push(
-            `PDF 附件数量超过 Provider 限制，已只发送前 ${selected.length} 个`,
+            getString("llm-warning-pdf-provider-limit", {
+              args: { count: selected.length },
+            }),
           );
         }
         const files = await Promise.all(
-          selected.map(async (pdf, index) => ({
-            filePath: (await pdf.getFilePathAsync()) || "",
-            displayName:
-              String(pdf.getField("title") || "").trim() || `PDF-${index + 1}`,
-            base64Content: await PDFExtractor.extractBase64FromAttachment(pdf),
-          })),
+          selected.map(async (pdf, index) => {
+            const filePath =
+              await PDFExtractor.ensurePdfAttachmentAvailable(pdf);
+            return {
+              filePath: filePath || "",
+              displayName:
+                String(pdf.getField("title") || "").trim() ||
+                "PDF-" + (index + 1),
+              base64Content:
+                await PDFExtractor.extractBase64FromAttachment(pdf),
+            };
+          }),
         );
         return { mode: "multi-file", files, warnings };
       }
     }
 
     if (policy === "pdf-base64") {
-      const content = await PDFExtractor.extractBase64FromItem(input.item);
+      const content = await PDFExtractor.extractBase64FromItem(
+        input.item,
+        statusCallback,
+      );
       return { mode: "single", content, isBase64: true, warnings };
     }
 
     if (attachmentMode === "all") {
-      const allPdfs = await PDFExtractor.getAllPdfAttachments(input.item);
-      const selected = allPdfs.slice(0, maxAttachments);
+      const selected = pdfAttachments.slice(0, maxAttachments);
       const parts = await Promise.all(
         selected.map(async (pdf, index) => {
           const title =
-            String(pdf.getField("title") || "").trim() || `PDF-${index + 1}`;
+            String(pdf.getField("title") || "").trim() || "PDF-" + (index + 1);
           const text = await PDFExtractor.extractTextFromAttachment(pdf);
-          return `\n\n=== ${title} ===\n${this.normalizeText(text)}`;
+          return "\n\n=== " + title + " ===\n" + this.normalizeText(text);
         }),
       );
       return {
@@ -1002,10 +1276,17 @@ export class LLMService {
       };
     }
 
-    const text = await PDFExtractor.extractTextFromItem(input.item, policy);
+    const text = await PDFExtractor.extractTextFromItem(
+      input.item,
+      policy,
+      statusCallback,
+    );
     return {
       mode: "single",
-      content: this.normalizeText(text),
+      content:
+        policy === "mineru"
+          ? this.normalizeMarkdown(text)
+          : this.normalizeText(text),
       isBase64: false,
       warnings,
     };
@@ -1015,7 +1296,30 @@ export class LLMService {
     input: LLMPdfAttachmentContent,
     policy: LLMContentPolicy,
     warnings: string[],
+    statusCallback?: (
+      message: string,
+      progress: number,
+      meta?: TaskProgressMeta,
+    ) => void,
   ): Promise<ResolvedContent> {
+    if (policy === "markdown") {
+      const parsed = await ParsedMarkdownExtractor.extractFromItem(
+        input.item || input.attachment,
+        input.attachment,
+      );
+      warnings.push(
+        getString("llm-warning-parsed-markdown-used", {
+          args: { source: parsed.sourceLabel },
+        }),
+      );
+      return {
+        mode: "single",
+        content: this.normalizeMarkdown(parsed.markdown),
+        isBase64: false,
+        warnings,
+      };
+    }
+
     if (policy === "pdf-base64") {
       const content = await PDFExtractor.extractBase64FromAttachment(
         input.attachment,
@@ -1025,8 +1329,58 @@ export class LLMService {
 
     const text =
       policy === "mineru" && input.item
-        ? await PDFExtractor.extractTextFromItem(input.item, "mineru")
+        ? await PDFExtractor.extractTextFromItem(
+            input.item,
+            "mineru",
+            statusCallback,
+          )
         : await PDFExtractor.extractTextFromAttachment(input.attachment);
+    return {
+      mode: "single",
+      content:
+        policy === "mineru"
+          ? this.normalizeMarkdown(text)
+          : this.normalizeText(text),
+      isBase64: false,
+      warnings,
+    };
+  }
+
+  private static async resolveAnalyzableAttachmentContent(
+    input: LLMAnalyzableAttachmentContent,
+    policy: LLMContentPolicy,
+    warnings: string[],
+    statusCallback?: (
+      message: string,
+      progress: number,
+      meta?: TaskProgressMeta,
+    ) => void,
+  ): Promise<ResolvedContent> {
+    if (PDFExtractor.isPdfAttachment(input.attachment)) {
+      return this.resolvePdfAttachmentContent(
+        {
+          kind: "pdf-attachment",
+          item: input.item,
+          attachment: input.attachment,
+          policy: input.policy,
+        },
+        policy,
+        warnings,
+        statusCallback,
+      );
+    }
+
+    if (policy === "pdf-base64") {
+      warnings.push(getString("llm-warning-attachment-as-text"));
+    }
+
+    if (policy === "markdown") {
+      throw new Error(getString("parsed-markdown-error-file-input"));
+    }
+
+    const text = await ContentExtractor.extractTextFromAnalyzableAttachment(
+      input.attachment,
+    );
     return {
       mode: "single",
       content: this.normalizeText(text),
@@ -1056,14 +1410,16 @@ export class LLMService {
       const files = input.files.slice(0, limit);
       if (files.length < input.files.length) {
         warnings.push(
-          `PDF 附件数量超过 Provider 限制，已只发送前 ${files.length} 个`,
+          getString("llm-warning-pdf-provider-limit", {
+            args: { count: files.length },
+          }),
         );
       }
       return { mode: "multi-file", files, warnings };
     }
 
     const first = input.files[0];
-    if (!first) throw new Error("没有可用的 PDF 内容");
+    if (!first) throw new Error(getString("llm-error-no-pdf-content"));
 
     if (
       policy === "pdf-base64" &&
@@ -1072,9 +1428,7 @@ export class LLMService {
         capabilities.maxPdfFiles <= 1 ||
         typeof provider.generateMultiFileSummary !== "function")
     ) {
-      throw new Error(
-        "当前 Provider 不支持多 PDF 上传。请将“多 PDF 附件模式”切换为“仅默认 PDF”，或更换支持多 PDF 的 Provider。",
-      );
+      throw new Error(getString("llm-error-multi-pdf-unsupported"));
     }
 
     if (policy === "pdf-base64" && first.base64Content) {
@@ -1087,7 +1441,7 @@ export class LLMService {
     }
 
     if (policy === "pdf-base64") {
-      throw new Error("当前输入缺少可上传的 PDF/Base64 内容。");
+      throw new Error(getString("llm-error-missing-uploadable-pdf"));
     }
 
     const textParts = input.files
@@ -1098,7 +1452,7 @@ export class LLMService {
       )
       .filter((part) => part.trim().length > 0);
     if (textParts.length === 0) {
-      throw new Error("当前输入缺少可用文本或可上传的 PDF/Base64 内容");
+      throw new Error(getString("llm-error-missing-text-or-pdf"));
     }
 
     return {
@@ -1111,6 +1465,15 @@ export class LLMService {
 
   private static normalizeText(text: string): string {
     return PDFExtractor.truncateText(PDFExtractor.cleanText(text));
+  }
+
+  private static normalizeMarkdown(markdown: string): string {
+    const normalized = markdown
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "")
+      .replace(/\n{4,}/g, "\n\n\n")
+      .trim();
+    return PDFExtractor.truncateText(normalized);
   }
 
   private static buildConnectionTestOptions(
@@ -1146,7 +1509,7 @@ export class LLMService {
 
   private static getDefaultPrompt(): string {
     const saved = (getPref("summaryPrompt") as string) || "";
-    return saved.trim() ? saved : getDefaultSummaryPrompt();
+    return getConfiguredSummaryPrompt(saved);
   }
 
   private static notifyError(message: string): void {

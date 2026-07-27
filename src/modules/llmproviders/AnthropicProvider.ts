@@ -10,7 +10,8 @@ import { SYSTEM_ROLE_PROMPT, buildUserMessage } from "../../utils/prompts";
 import { getRequestTimeoutMs, logPromptCacheUsage } from "./shared/llmutils";
 import {
   getConnectionTestInput,
-  getConnectionTestModeLabel,
+  formatConnectionTestSuccess,
+  formatProviderTimeout,
 } from "./shared/connectionTest";
 import {
   deriveAnthropicModelsUrl,
@@ -23,6 +24,18 @@ import {
   normalizeAbortError,
   throwIfAborted,
 } from "./shared/requestAbort";
+import {
+  providerHttpRequestFailed,
+  providerMissingApiKey,
+  providerMissingApiUrl,
+  providerNoPdfFiles,
+  providerNoPdfProcessed,
+  providerRequestFailed,
+  providerStreamMissingDone,
+  providerStreamParseFailed,
+  providerStreamTruncated,
+  providerStreamUnexpectedEnd,
+} from "./shared/localizedErrors";
 
 export function shouldOmitAnthropicTemperature(model: string): boolean {
   const normalized = model.trim().toLowerCase();
@@ -33,6 +46,12 @@ export function shouldOmitAnthropicTemperature(model: string): boolean {
   if (!opus4Minor) return false;
 
   return Number(opus4Minor[1]) >= 7;
+}
+
+export const DEFAULT_ANTHROPIC_MAX_TOKENS = 100000;
+
+export function resolveAnthropicMaxTokens(options: LLMOptions): number {
+  return options.maxTokens ?? DEFAULT_ANTHROPIC_MAX_TOKENS;
 }
 
 function buildAnthropicTemperatureParam(
@@ -68,10 +87,10 @@ export class AnthropicProvider implements ILlmProvider {
     );
     const apiKey = (options.apiKey || "").trim();
     const model = (options.model || "claude-3-5-sonnet-20241022").trim();
-    const maxTokens = options.maxTokens ?? 4096; // Anthropic 必填
+    const maxTokens = resolveAnthropicMaxTokens(options);
 
-    if (!baseUrl) throw new Error("Anthropic API URL 未配置");
-    if (!apiKey) throw new Error("Anthropic API Key 未配置");
+    if (!baseUrl) throw new Error(providerMissingApiUrl("Anthropic"));
+    if (!apiKey) throw new Error(providerMissingApiKey("Anthropic"));
     throwIfAborted(options.abortSignal);
 
     const endpoint = `${baseUrl}/v1/messages`;
@@ -150,13 +169,13 @@ export class AnthropicProvider implements ILlmProvider {
                 const parsed = errorResponse ? JSON.parse(errorResponse) : null;
                 const err = parsed?.error || parsed || {};
                 const code = err?.type || `HTTP ${status}`;
-                const msg = err?.message || "请求失败";
+                const msg = err?.message || providerRequestFailed("API");
                 const errorMessage = `${code}: ${msg}`;
                 xmlhttp.abort();
                 throw new Error(errorMessage);
               } catch {
                 xmlhttp.abort();
-                throw new Error(`HTTP ${status}: 请求失败`);
+                throw new Error(providerHttpRequestFailed(status));
               }
             }
 
@@ -211,7 +230,7 @@ export class AnthropicProvider implements ILlmProvider {
       if (abortError || isAbortError(error, options.abortSignal)) {
         throw normalizeAbortError(abortError || error, options.abortSignal);
       }
-      let errorMessage = error?.message || "Anthropic 请求失败";
+      let errorMessage = error?.message || providerRequestFailed("Anthropic");
       try {
         const responseText =
           error?.xmlhttp?.response || error?.xmlhttp?.responseText;
@@ -252,10 +271,10 @@ export class AnthropicProvider implements ILlmProvider {
     );
     const apiKey = (options.apiKey || "").trim();
     const model = (options.model || "claude-3-5-sonnet-20241022").trim();
-    const maxTokens = options.maxTokens ?? 4096;
+    const maxTokens = resolveAnthropicMaxTokens(options);
 
-    if (!baseUrl) throw new Error("Anthropic API URL 未配置");
-    if (!apiKey) throw new Error("Anthropic API Key 未配置");
+    if (!baseUrl) throw new Error(providerMissingApiUrl("Anthropic"));
+    if (!apiKey) throw new Error(providerMissingApiKey("Anthropic"));
     throwIfAborted(options.abortSignal);
 
     const endpoint = `${baseUrl}/v1/messages`;
@@ -354,7 +373,7 @@ export class AnthropicProvider implements ILlmProvider {
                 const parsed = errorResponse ? JSON.parse(errorResponse) : null;
                 const err = parsed?.error || parsed || {};
                 const code = err?.type || `HTTP ${status}`;
-                const msg = err?.message || "请求失败";
+                const msg = err?.message || providerRequestFailed("API");
                 const errorMessage = `${code}: ${msg}`;
                 abortError = new Error(errorMessage);
                 ztoolkit.log("[AI-Butler] Anthropic HTTP error:", {
@@ -365,7 +384,7 @@ export class AnthropicProvider implements ILlmProvider {
                 });
                 xmlhttp.abort();
               } catch (parseErr) {
-                const errorMessage = `HTTP ${status}: 请求失败`;
+                const errorMessage = providerHttpRequestFailed(status);
                 abortError = new Error(errorMessage);
                 ztoolkit.log("[AI-Butler] Anthropic HTTP error:", {
                   status,
@@ -431,7 +450,7 @@ export class AnthropicProvider implements ILlmProvider {
       if (abortError || isAbortError(error, options.abortSignal)) {
         throw normalizeAbortError(abortError || error, options.abortSignal);
       }
-      let errorMessage = error?.message || "Anthropic 请求失败";
+      let errorMessage = error?.message || providerRequestFailed("Anthropic");
       try {
         const responseText =
           error?.xmlhttp?.response || error?.xmlhttp?.responseText;
@@ -486,8 +505,8 @@ export class AnthropicProvider implements ILlmProvider {
       "",
     );
     const apiKey = (options.apiKey || "").trim();
-    if (!baseUrl) throw new Error("Anthropic API URL 未配置");
-    if (!apiKey) throw new Error("Anthropic API Key 未配置");
+    if (!baseUrl) throw new Error(providerMissingApiUrl("Anthropic"));
+    if (!apiKey) throw new Error(providerMissingApiKey("Anthropic"));
 
     const url = deriveAnthropicModelsUrl(baseUrl);
     const data = await requestModelListJson(
@@ -508,8 +527,8 @@ export class AnthropicProvider implements ILlmProvider {
     );
     const apiKey = (options.apiKey || "").trim();
     const model = (options.model || "claude-3-5-sonnet-20241022").trim();
-    if (!baseUrl) throw new Error("Anthropic API URL 未配置");
-    if (!apiKey) throw new Error("Anthropic API Key 未配置");
+    if (!baseUrl) throw new Error(providerMissingApiUrl("Anthropic"));
+    if (!apiKey) throw new Error(providerMissingApiKey("Anthropic"));
 
     const url = `${baseUrl}/v1/messages`;
     const testInput = getConnectionTestInput(options);
@@ -585,7 +604,7 @@ export class AnthropicProvider implements ILlmProvider {
       const status = error?.xmlhttp?.status;
       const responseBody =
         error?.xmlhttp?.response || error?.xmlhttp?.responseText || "";
-      let errorMessage = error?.message || "Anthropic 请求失败";
+      let errorMessage = error?.message || providerRequestFailed("Anthropic");
       let errorName = "NetworkError";
       try {
         if (responseBody) {
@@ -623,13 +642,18 @@ export class AnthropicProvider implements ILlmProvider {
       const json =
         typeof rawResponse === "string" ? JSON.parse(rawResponse) : rawResponse;
       const text = json?.content?.[0]?.text || "";
-      return `Mode: ${getConnectionTestModeLabel(testInput.mode)}\n✅ 连接成功!\n模型: ${model}\n响应: ${text}\n\n--- 原始响应 ---\n${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, null, 2)}`;
+      return formatConnectionTestSuccess({
+        mode: testInput.mode,
+        model,
+        response: text,
+        rawResponse,
+      });
     }
 
     const { APITestError } = await import("./types");
     throw new APITestError(`HTTP ${status}`, {
       errorName: `HTTP_${status}`,
-      errorMessage: `HTTP ${status}: ${response.statusText || "请求失败"}`,
+      errorMessage: `HTTP ${status}: ${response.statusText || providerRequestFailed("API")}`,
       statusCode: status,
       requestUrl: url,
       requestBody: payloadStr,
@@ -658,11 +682,11 @@ export class AnthropicProvider implements ILlmProvider {
     );
     const apiKey = (options.apiKey || "").trim();
     const model = (options.model || "claude-3-5-sonnet-20241022").trim();
-    const maxTokens = options.maxTokens ?? 8192;
+    const maxTokens = resolveAnthropicMaxTokens(options);
 
-    if (!baseUrl) throw new Error("Anthropic API URL 未配置");
-    if (!apiKey) throw new Error("Anthropic API Key 未配置");
-    if (pdfFiles.length === 0) throw new Error("没有要处理的 PDF 文件");
+    if (!baseUrl) throw new Error(providerMissingApiUrl("Anthropic"));
+    if (!apiKey) throw new Error(providerMissingApiKey("Anthropic"));
+    if (pdfFiles.length === 0) throw new Error(providerNoPdfFiles());
     throwIfAborted(options.abortSignal);
 
     // 构建 document 部分
@@ -689,7 +713,7 @@ export class AnthropicProvider implements ILlmProvider {
     }
 
     if (documentParts.length === 0) {
-      throw new Error("没有成功处理任何 PDF 文件");
+      throw new Error(providerNoPdfProcessed());
     }
 
     ztoolkit.log(
@@ -747,11 +771,11 @@ export class AnthropicProvider implements ILlmProvider {
                 const parsed = errorResponse ? JSON.parse(errorResponse) : null;
                 const err = parsed?.error || parsed || {};
                 const code = err?.type || `HTTP ${status}`;
-                const msg = err?.message || "请求失败";
+                const msg = err?.message || providerRequestFailed("API");
                 abortError = new Error(`${code}: ${msg}`);
                 xmlhttp.abort();
               } catch {
-                abortError = new Error(`HTTP ${status}: 请求失败`);
+                abortError = new Error(providerHttpRequestFailed(status));
                 xmlhttp.abort();
               }
               return;
@@ -812,7 +836,9 @@ export class AnthropicProvider implements ILlmProvider {
           xmlhttp.ontimeout = () => {
             if (!abortError)
               abortError = new Error(
-                `Timeout: 请求超过 ${options.requestTimeoutMs ?? getRequestTimeoutMs()} ms`,
+                formatProviderTimeout(
+                  options.requestTimeoutMs ?? getRequestTimeoutMs(),
+                ),
               );
           };
         },
@@ -828,7 +854,7 @@ export class AnthropicProvider implements ILlmProvider {
       if (isAbortError(error, options.abortSignal)) {
         throw normalizeAbortError(error, options.abortSignal);
       }
-      let errorMessage = error?.message || "Anthropic 多文件请求失败";
+      let errorMessage = error?.message || providerRequestFailed("Anthropic");
       try {
         const responseText =
           error?.xmlhttp?.response || error?.xmlhttp?.responseText;

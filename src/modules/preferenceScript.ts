@@ -1,4 +1,5 @@
 import { getPref, setPref, clearPref } from "../utils/prefs";
+import { getString } from "../utils/locale";
 import {
   getDefaultSummaryPrompt,
   getDefaultTableTemplate,
@@ -225,6 +226,7 @@ function initializeDefaultPrefs() {
     temperature: "0.7",
     reasoningEffort: "default",
     stream: true,
+    promptLanguage: "auto",
     summaryPrompt: getDefaultSummaryPrompt(),
     promptVersion: PROMPT_VERSION,
     // 文献综述表格填写相关
@@ -442,7 +444,9 @@ function bindOpenMainWindowButton(win: Window) {
             closeTime: 5000,
           })
             .createLine({
-              text: `打开主窗口失败: ${message}`,
+              text: getString("preferences-open-main-window-failed", {
+                args: { message },
+              }),
               type: "error",
             })
             .show();
@@ -456,7 +460,9 @@ function bindOpenMainWindowButton(win: Window) {
           closeTime: 5000,
         })
           .createLine({
-            text: `打开主窗口失败: ${message}`,
+            text: getString("preferences-open-main-window-failed", {
+              args: { message },
+            }),
             type: "error",
           })
           .show();

@@ -192,7 +192,7 @@ describe("LLMEndpointManager", function () {
   });
 
   it("normalizes endpoint PDF modes and resolves global fallback", function () {
-    Zotero.Prefs.set(prefName("pdfProcessMode"), "mineru", true);
+    Zotero.Prefs.set(prefName("pdfProcessMode"), "markdown", true);
     LLMEndpointManager.saveEndpoints([
       { ...makeEndpoint("a"), pdfProcessMode: "text" },
       { ...makeEndpoint("b"), pdfProcessMode: "invalid" as any },
@@ -207,7 +207,7 @@ describe("LLMEndpointManager", function () {
     ).to.equal("text");
     expect(
       LLMEndpointManager.getEffectivePdfProcessMode(endpoints[1]),
-    ).to.equal("mineru");
+    ).to.equal("markdown");
   });
 
   it("returns priority route order and skips disabled endpoints", function () {
@@ -261,7 +261,7 @@ describe("LLMEndpointManager", function () {
     LLMEndpointManager.saveEndpoints([makeEndpoint("a", false)]);
 
     expect(() => LLMEndpointManager.prepareRoute()).to.throw(
-      "No enabled LLM endpoints are configured.",
+      "未配置可用的 LLM Endpoint",
     );
   });
 
