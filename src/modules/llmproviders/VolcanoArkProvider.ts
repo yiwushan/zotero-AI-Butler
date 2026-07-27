@@ -34,7 +34,6 @@ import {
   throwIfAborted,
 } from "./shared/requestAbort";
 import {
-  providerHttpRequestFailed,
   providerEmptyResponse,
   providerEmptyResponseDetail,
   providerMissingApiKey,
@@ -47,6 +46,29 @@ import {
   providerStreamTruncated,
   providerStreamUnexpectedEnd,
 } from "./shared/localizedErrors";
+
+type VolcanoRequestError = Error & {
+  httpStatus?: number;
+  suppressEndpointRetry?: boolean;
+};
+
+function createVolcanoRequestError(
+  source: any,
+  message: string,
+): VolcanoRequestError {
+  const result = new Error(message) as VolcanoRequestError;
+  const status = Number(source?.xmlhttp?.status);
+  if (Number.isFinite(status) && status > 0) {
+    result.httpStatus = status;
+    result.suppressEndpointRetry =
+      status >= 400 &&
+      status < 500 &&
+      status !== 408 &&
+      status !== 409 &&
+      status !== 429;
+  }
+  return result;
+}
 
 /**
  * 火山引擎 Ark Provider
@@ -167,22 +189,13 @@ export class VolcanoArkProvider implements ILlmProvider {
               abortError = error;
             },
           );
+          if (!stream) return;
           xmlhttp.onprogress = (e: any) => {
             const status = e.target.status;
             if (status >= 400) {
-              try {
-                const errorResponse = e.target.response;
-                const parsed = errorResponse ? JSON.parse(errorResponse) : null;
-                const err = parsed?.error || parsed || {};
-                const code = err?.code || `HTTP ${status}`;
-                const msg = err?.message || providerRequestFailed("API");
-                const errorMessage = `${code}: ${msg}`;
-                xmlhttp.abort();
-                throw new Error(errorMessage);
-              } catch {
-                xmlhttp.abort();
-                throw new Error(providerHttpRequestFailed(status));
-              }
+              // Let Zotero.HTTP finish the request so its rejection retains the
+              // complete provider response body for the catch block below.
+              return;
             }
 
             try {
@@ -255,7 +268,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw createVolcanoRequestError(error, errorMessage);
     } finally {
       cleanupAbortSignal?.();
     }
@@ -376,33 +389,11 @@ export class VolcanoArkProvider implements ILlmProvider {
               abortError = error;
             },
           );
+          if (!stream) return;
           xmlhttp.onprogress = (e: any) => {
             const status = e.target.status;
             if (status >= 400) {
-              try {
-                const errorResponse = e.target.response;
-                const parsed = errorResponse ? JSON.parse(errorResponse) : null;
-                const err = parsed?.error || parsed || {};
-                const code = err?.code || `HTTP ${status}`;
-                const msg = err?.message || providerRequestFailed("API");
-                const errorMessage = `${code}: ${msg}`;
-                abortError = new Error(errorMessage);
-                ztoolkit.log("[AI-Butler] VolcanoArk HTTP error:", {
-                  status,
-                  code,
-                  msg,
-                  response: errorResponse,
-                });
-                xmlhttp.abort();
-              } catch (parseErr) {
-                const errorMessage = providerHttpRequestFailed(status);
-                abortError = new Error(errorMessage);
-                ztoolkit.log("[AI-Butler] VolcanoArk HTTP error:", {
-                  status,
-                  parseErr,
-                });
-                xmlhttp.abort();
-              }
+              // Preserve the response body for the common HTTP error parser.
               return;
             }
 
@@ -500,7 +491,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         message: errorMessage,
       });
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw createVolcanoRequestError(error, errorMessage);
     } finally {
       cleanupAbortSignal?.();
     }
@@ -918,21 +909,12 @@ export class VolcanoArkProvider implements ILlmProvider {
               abortError = error;
             },
           );
+          if (!stream) return;
           xmlhttp.onprogress = (e: any) => {
             const status = e.target.status;
             if (status >= 400) {
-              try {
-                const errorResponse = e.target.response;
-                const parsed = errorResponse ? JSON.parse(errorResponse) : null;
-                const err = parsed?.error || parsed || {};
-                const code = err?.code || `HTTP ${status}`;
-                const msg = err?.message || providerRequestFailed("API");
-                xmlhttp.abort();
-                throw new Error(`${code}: ${msg}`);
-              } catch {
-                xmlhttp.abort();
-                throw new Error(providerHttpRequestFailed(status));
-              }
+              // Preserve the response body for the common HTTP error parser.
+              return;
             }
 
             try {
@@ -1005,7 +987,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw createVolcanoRequestError(error, errorMessage);
     } finally {
       cleanupAbortSignal?.();
     }

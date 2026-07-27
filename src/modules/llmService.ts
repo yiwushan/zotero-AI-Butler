@@ -187,6 +187,7 @@ type ResolvedProvider = {
 
 export class LLMApiCallError extends Error {
   public readonly suppressTaskRetry = true;
+  public readonly suppressEndpointRetry: boolean;
   public readonly endpointId: string;
   public readonly endpointName: string;
   public readonly providerId: string;
@@ -199,6 +200,9 @@ export class LLMApiCallError extends Error {
     this.endpointName = endpoint.name;
     this.providerId = endpoint.providerType;
     this.originalError = error;
+    this.suppressEndpointRetry =
+      (error as Error & { suppressEndpointRetry?: boolean })
+        .suppressEndpointRetry === true;
     this.stack = error.stack || this.stack;
   }
 }
@@ -618,10 +622,12 @@ export class LLMService {
     const useRetry = request.transport?.retry ?? true;
     const maxRetries = useRetry ? route.maxAttempts : 1;
     let lastError: Error | null = null;
+    let attemptsMade = 0;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       throwIfAborted(request.transport?.abortSignal);
       const endpoint = route.endpoints[attempt % route.endpoints.length];
+      attemptsMade++;
       try {
         const response = await this.generateOnceWithEndpoint(
           endpoint,
@@ -639,10 +645,16 @@ export class LLMService {
         ztoolkit.log(
           `[LLMService] API failed via ${endpoint.name} (${attempt + 1}/${maxRetries}): ${lastError.message}`,
         );
+        if (
+          route.endpoints.length === 1 &&
+          this.shouldSuppressEndpointRetry(lastError)
+        ) {
+          break;
+        }
       }
     }
 
-    throw new LLMApiExhaustedError(maxRetries, lastError || undefined);
+    throw new LLMApiExhaustedError(attemptsMade, lastError || undefined);
   }
 
   private static async generateOnceWithEndpoint(
@@ -793,9 +805,11 @@ export class LLMService {
     const useRetry = request.transport?.retry ?? true;
     const maxAttempts = useRetry ? LLMEndpointManager.getMaxAttemptCount() : 1;
     let lastError: Error | null = null;
+    let attemptsMade = 0;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       throwIfAborted(request.transport?.abortSignal);
+      attemptsMade++;
       try {
         return await this.generateOnceWithEndpoint(endpoint, request, prompt);
       } catch (error: unknown) {
@@ -806,10 +820,11 @@ export class LLMService {
         ztoolkit.log(
           `[LLMService] API failed via ${endpoint.name} (${attempt + 1}/${maxAttempts}): ${lastError.message}`,
         );
+        if (this.shouldSuppressEndpointRetry(lastError)) break;
       }
     }
 
-    throw new LLMApiExhaustedError(maxAttempts, lastError || undefined);
+    throw new LLMApiExhaustedError(attemptsMade, lastError || undefined);
   }
 
   private static async chatWithEndpointRouting(
@@ -819,10 +834,12 @@ export class LLMService {
     const useRetry = request.transport?.retry ?? true;
     const maxRetries = useRetry ? route.maxAttempts : 1;
     let lastError: Error | null = null;
+    let attemptsMade = 0;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       throwIfAborted(request.transport?.abortSignal);
       const endpoint = route.endpoints[attempt % route.endpoints.length];
+      attemptsMade++;
       try {
         const response = await this.chatOnceWithEndpoint(endpoint, request);
         LLMEndpointManager.markEndpointAttempted(endpoint.id);
@@ -836,10 +853,16 @@ export class LLMService {
         ztoolkit.log(
           `[LLMService] Chat API failed via ${endpoint.name} (${attempt + 1}/${maxRetries}): ${lastError.message}`,
         );
+        if (
+          route.endpoints.length === 1 &&
+          this.shouldSuppressEndpointRetry(lastError)
+        ) {
+          break;
+        }
       }
     }
 
-    throw new LLMApiExhaustedError(maxRetries, lastError || undefined);
+    throw new LLMApiExhaustedError(attemptsMade, lastError || undefined);
   }
 
   private static async chatOnceWithEndpoint(
@@ -968,9 +991,11 @@ export class LLMService {
     const useRetry = request.transport?.retry ?? true;
     const maxAttempts = useRetry ? LLMEndpointManager.getMaxAttemptCount() : 1;
     let lastError: Error | null = null;
+    let attemptsMade = 0;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       throwIfAborted(request.transport?.abortSignal);
+      attemptsMade++;
       try {
         return await this.chatOnceWithEndpoint(endpoint, request);
       } catch (error: unknown) {
@@ -981,10 +1006,11 @@ export class LLMService {
         ztoolkit.log(
           `[LLMService] Chat API failed via ${endpoint.name} (${attempt + 1}/${maxAttempts}): ${lastError.message}`,
         );
+        if (this.shouldSuppressEndpointRetry(lastError)) break;
       }
     }
 
-    throw new LLMApiExhaustedError(maxAttempts, lastError || undefined);
+    throw new LLMApiExhaustedError(attemptsMade, lastError || undefined);
   }
 
   private static toApiCallError(
@@ -994,6 +1020,19 @@ export class LLMService {
     return new LLMApiCallError(
       endpoint,
       error instanceof Error ? error : new Error(String(error)),
+    );
+  }
+
+  private static shouldSuppressEndpointRetry(error: unknown): boolean {
+    const value = error as
+      | {
+          suppressEndpointRetry?: boolean;
+          originalError?: { suppressEndpointRetry?: boolean };
+        }
+      | undefined;
+    return (
+      value?.suppressEndpointRetry === true ||
+      value?.originalError?.suppressEndpointRetry === true
     );
   }
 
