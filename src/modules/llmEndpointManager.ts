@@ -119,14 +119,30 @@ const DOUBAO_TUNING_PRESETS: Record<
   LLMDoubaoTuningValues
 > = {
   "model-default": { reasoningEffort: "default" },
-  academic: { reasoningEffort: "low", temperature: 0.2, stream: false },
+  academic: {
+    reasoningEffort: "medium",
+    temperature: 0.2,
+    maxOutputTokens: 32768,
+    stream: true,
+  },
   "deep-reasoning": {
     reasoningEffort: "high",
     temperature: 0.2,
-    stream: false,
+    maxOutputTokens: 65536,
+    stream: true,
   },
-  fast: { reasoningEffort: "none", temperature: 0.2, stream: true },
-  creative: { reasoningEffort: "low", temperature: 0.8, stream: true },
+  fast: {
+    reasoningEffort: "none",
+    temperature: 0.2,
+    maxOutputTokens: 8192,
+    stream: true,
+  },
+  creative: {
+    reasoningEffort: "low",
+    temperature: 0.8,
+    maxOutputTokens: 16384,
+    stream: true,
+  },
 };
 
 function nowIso(): string {
@@ -241,18 +257,22 @@ function normalizeEndpoint(
     apiKey: String(raw.apiKey || "").trim(),
     model: String(raw.model || defaults.model).trim(),
     reasoningEffort: normalizeReasoningEffortSetting(
-      raw.reasoningEffort ?? doubaoPresetValues?.reasoningEffort,
+      doubaoPresetValues?.reasoningEffort ?? raw.reasoningEffort,
       defaults.reasoningEffort || "default",
     ),
     doubaoTuningPreset,
-    temperature:
-      normalizeOptionalNumber(raw.temperature, 0, 2) ??
-      doubaoPresetValues?.temperature,
-    topP: normalizeOptionalNumber(raw.topP, 0, 1) ?? doubaoPresetValues?.topP,
-    maxOutputTokens:
-      normalizeOptionalPositiveInteger(raw.maxOutputTokens) ??
-      doubaoPresetValues?.maxOutputTokens,
-    stream: normalizeOptionalBoolean(raw.stream) ?? doubaoPresetValues?.stream,
+    temperature: doubaoPresetValues
+      ? doubaoPresetValues.temperature
+      : normalizeOptionalNumber(raw.temperature, 0, 2),
+    topP: doubaoPresetValues
+      ? doubaoPresetValues.topP
+      : normalizeOptionalNumber(raw.topP, 0, 1),
+    maxOutputTokens: doubaoPresetValues
+      ? doubaoPresetValues.maxOutputTokens
+      : normalizeOptionalPositiveInteger(raw.maxOutputTokens),
+    stream: doubaoPresetValues
+      ? doubaoPresetValues.stream
+      : normalizeOptionalBoolean(raw.stream),
     pdfProcessMode: normalizeEndpointPdfProcessMode(raw.pdfProcessMode),
     enabled: raw.enabled !== false,
     createdAt,
@@ -357,6 +377,7 @@ export class LLMEndpointManager {
     providerType: LLMEndpointProviderType = "openai-compat",
   ): LLMEndpoint {
     const defaults = this.providerDefaults(providerType);
+    const doubaoValues = DOUBAO_TUNING_PRESETS.academic;
     const timestamp = nowIso();
     return {
       id: makeEndpointId(),
@@ -367,12 +388,17 @@ export class LLMEndpointManager {
       model: defaults.model,
       reasoningEffort:
         providerType === "volcanoark"
-          ? DOUBAO_TUNING_PRESETS.academic.reasoningEffort
+          ? doubaoValues.reasoningEffort
           : defaults.reasoningEffort || "default",
       doubaoTuningPreset:
         providerType === "volcanoark" ? "academic" : "model-default",
-      temperature: providerType === "volcanoark" ? 0.2 : undefined,
-      stream: providerType === "volcanoark" ? false : undefined,
+      temperature:
+        providerType === "volcanoark" ? doubaoValues.temperature : undefined,
+      maxOutputTokens:
+        providerType === "volcanoark"
+          ? doubaoValues.maxOutputTokens
+          : undefined,
+      stream: providerType === "volcanoark" ? doubaoValues.stream : undefined,
       pdfProcessMode: "global",
       enabled: true,
       createdAt: timestamp,

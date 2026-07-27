@@ -137,23 +137,29 @@ describe("LLMEndpointManager", function () {
 
     expect(endpoint).to.include({
       doubaoTuningPreset: "academic",
-      reasoningEffort: "low",
+      reasoningEffort: "medium",
       temperature: 0.2,
-      stream: false,
+      maxOutputTokens: 32768,
+      stream: true,
     });
-    expect(endpoint.maxOutputTokens).to.equal(undefined);
   });
 
-  it("migrates an existing academic preset to stable transport", function () {
+  it("migrates an existing academic preset to Seed 2.1 options", function () {
     const endpoint = LLMEndpointManager.createEndpoint("volcanoark");
-    delete endpoint.stream;
+    endpoint.reasoningEffort = "low";
+    endpoint.maxOutputTokens = undefined;
+    endpoint.stream = false;
 
     LLMEndpointManager.saveEndpoints([endpoint]);
 
-    expect(LLMEndpointManager.getEndpoints()[0].stream).to.equal(false);
+    expect(LLMEndpointManager.getEndpoints()[0]).to.include({
+      reasoningEffort: "medium",
+      maxOutputTokens: 32768,
+      stream: true,
+    });
   });
 
-  it("applies Doubao tuning presets without imposing an output cap", function () {
+  it("applies Doubao tuning presets with task-specific output budgets", function () {
     const endpoint = LLMEndpointManager.createEndpoint("volcanoark");
     endpoint.topP = 0.9;
 
@@ -161,10 +167,10 @@ describe("LLMEndpointManager", function () {
     expect(endpoint).to.include({
       reasoningEffort: "high",
       temperature: 0.2,
+      maxOutputTokens: 65536,
+      stream: true,
     });
-    expect(endpoint.maxOutputTokens).to.equal(undefined);
     expect(endpoint.topP).to.equal(undefined);
-    expect(endpoint.stream).to.equal(false);
 
     LLMEndpointManager.applyDoubaoTuningPreset(endpoint, "model-default");
     expect(endpoint.reasoningEffort).to.equal("default");
@@ -182,8 +188,9 @@ describe("LLMEndpointManager", function () {
     const academic = LLMService.buildOptions(endpoint);
     expect(academic.temperature).to.equal(0.2);
     expect(academic.topP).to.equal(undefined);
-    expect(academic.maxTokens).to.equal(undefined);
-    expect(academic.stream).to.equal(false);
+    expect(academic.maxTokens).to.equal(32768);
+    expect(academic.reasoningEffort).to.equal("medium");
+    expect(academic.stream).to.equal(true);
 
     LLMEndpointManager.applyDoubaoTuningPreset(endpoint, "model-default");
     Zotero.Prefs.set(prefName("enableTopP"), false, true);

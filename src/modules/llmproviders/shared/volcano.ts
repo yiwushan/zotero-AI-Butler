@@ -1,5 +1,8 @@
 import type { LLMOptions } from "../types";
-import { resolveVolcanoThinkingType } from "./reasoning";
+import {
+  resolveVolcanoReasoningEffort,
+  resolveVolcanoThinkingType,
+} from "./reasoning";
 
 export function buildVolcanoGenerationOptions(
   options: LLMOptions,
@@ -34,6 +37,10 @@ export function buildVolcanoGenerationOptions(
 
   const thinkingType = resolveVolcanoThinkingType(options.reasoningEffort);
   if (thinkingType) result.thinking = { type: thinkingType };
+  const reasoningEffort = resolveVolcanoReasoningEffort(
+    options.reasoningEffort,
+  );
+  if (reasoningEffort) result.reasoning = { effort: reasoningEffort };
 
   return result;
 }

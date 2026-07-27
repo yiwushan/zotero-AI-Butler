@@ -65,11 +65,12 @@ export function resolveOpenRouterReasoningEffort(
   return resolveReasoningEffort(value);
 }
 
-export type VolcanoThinkingType = "disabled" | "auto" | "enabled";
+export type VolcanoThinkingType = "disabled" | "enabled";
+export type VolcanoReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 /**
- * 方舟 Responses API 使用 thinking.type，而不是 OpenAI 的 reasoning.effort。
- * 复用统一设置值，并将其折叠为方舟支持的三档思考模式。
+ * Seed 2.1 Pro/Turbo only accept enabled or disabled for thinking.type.
+ * Thinking intensity is configured separately through reasoning.effort.
  */
 export function resolveVolcanoThinkingType(
   value: unknown,
@@ -77,6 +78,15 @@ export function resolveVolcanoThinkingType(
   const effort = resolveReasoningEffort(value);
   if (!effort) return undefined;
   if (effort === "none" || effort === "minimal") return "disabled";
-  if (effort === "low") return "auto";
   return "enabled";
+}
+
+export function resolveVolcanoReasoningEffort(
+  value: unknown,
+): VolcanoReasoningEffort | undefined {
+  const effort = resolveReasoningEffort(value);
+  if (!effort) return undefined;
+  if (effort === "none" || effort === "minimal") return "minimal";
+  if (effort === "xhigh") return "high";
+  return effort;
 }

@@ -66,8 +66,9 @@ function reasoningEffortOptions(
     return [
       { value: "default", label: t("endpoint-volcano-reasoning-default") },
       { value: "none", label: t("endpoint-volcano-reasoning-none") },
-      { value: "low", label: t("endpoint-volcano-reasoning-auto") },
-      { value: "high", label: t("endpoint-volcano-reasoning-force") },
+      { value: "low", label: t("endpoint-volcano-reasoning-low") },
+      { value: "medium", label: t("endpoint-volcano-reasoning-medium") },
+      { value: "high", label: t("endpoint-volcano-reasoning-high") },
     ];
   }
   return [
@@ -121,7 +122,7 @@ function doubaoMaxOutputOptions(): Array<{ value: string; label: string }> {
       label: t("endpoint-doubao-max-output-recommended"),
     },
     { value: "16384", label: "16,384" },
-    { value: "32768", label: "32,768" },
+    { value: "32768", label: t("endpoint-doubao-max-output-academic") },
     { value: "65536", label: "65,536" },
     { value: "81920", label: "81,920" },
   ];
@@ -1233,7 +1234,7 @@ export class EndpointSettingsPanel {
     );
     if (endpoint.providerType === "volcanoark") {
       if (value === "minimal") value = "none";
-      if (value === "medium" || value === "xhigh") value = "high";
+      if (value === "xhigh") value = "high";
     }
     endpoint.reasoningEffort = value;
 
