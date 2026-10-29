@@ -1,6 +1,6 @@
 # Doubao Reading Edition
 
-Based on upstream Zotero AI Butler 5.1.1. Custom version: `5.1.1-doubao-lite.1`.
+Based on upstream Zotero AI Butler 5.1.1. Custom version: `5.1.1-doubao-lite.2`.
 
 ## Scope
 
@@ -14,8 +14,10 @@ Based on upstream Zotero AI Butler 5.1.1. Custom version: `5.1.1-doubao-lite.1`.
   transient retry backoff, custom MinerU servers, EPUB, and note exports.
 - Keep custom Doubao Seed 2.1 presets, native Ark reasoning parameters, reading
   prompts, and existing parsed Markdown/ZIP sources.
-- No official automatic update feed is included, so an official release cannot
-  silently replace the customized edition. Future upgrades require a new build.
+- Keep the mandatory HTTPS update URL, but disable automatic updates for this
+  add-on through AddonManager on startup. This does not change any other add-on's
+  update policy. Do not manually update to the upstream edition when you want to
+  retain the customized features.
 
 ## Cost Defaults
 
@@ -59,3 +61,16 @@ Run `npm run test:reading-edition`, `npm run test:llm-completion`,
 `npm run test:task-queue`, `npm run test:mineru`, and `npm run build`.
 Tests use mock credentials and local fixtures, not paid model requests.
 Zotero host integration must be checked separately on an existing installation.
+
+### Installation Fix In Lite.2
+
+Lite.1 incorrectly omitted `applications.zotero.update_url`. Zotero 10.0.6
+requires that field even when automatic updates are not wanted. Its installer
+reports the generic incompatibility error when the field is missing.
+
+The authoritative checks are in Zotero's
+[10.0.6 platform build script](https://github.com/zotero/zotero/blob/536244c2771f590abab9c09a3c27e615e0b318ff/app/scripts/fetch_xulrunner#L243).
+Gecko also requires a secure update URL for usability; a local `data:` URL is
+not a suitable replacement. Lite.2 restores the HTTPS field and uses the
+per-add-on update setting instead. Postbuild now checks the actual XPI archive
+and the required Zotero installation fields, not only the runtime bundle.

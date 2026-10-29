@@ -44,7 +44,11 @@ import { MainWindow } from "./modules/views/MainWindow";
 import { AutoScanManager } from "./modules/autoScanManager";
 import { AutoNoteExportManager } from "./modules/autoNoteExportManager";
 import { DEFAULT_NOTE_EXPORT_FILENAME_TEMPLATE } from "./modules/noteExportNaming";
-import { CHAT_ENABLED, applyReadingEditionDefaults } from "./modules/edition";
+import {
+  CHAT_ENABLED,
+  applyReadingEditionDefaults,
+  disableReadingEditionAutoUpdates,
+} from "./modules/edition";
 import {
   CONTEXT_MENU_ITEMS,
   DEFAULT_CONTEXT_MENU_COLLAPSED,
@@ -107,6 +111,12 @@ async function onStartup() {
   // 确保即使用户首次使用,也能有合理的默认设置
   initializeDefaultPrefsOnStartup();
   applyReadingEditionDefaults();
+  await disableReadingEditionAutoUpdates().catch((error) =>
+    ztoolkit.log(
+      "[ReadingEdition] Failed to disable background updates:",
+      error,
+    ),
+  );
 
   // 注册插件偏好设置面板
   // 用户可以通过 Zotero 设置界面访问和修改插件配置

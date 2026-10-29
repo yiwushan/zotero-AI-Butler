@@ -48,7 +48,11 @@ process.exitCode = result.status ?? 1;
 if (process.exitCode === 0) {
   const ui = spawnSync(
     process.execPath,
-    ["--test", "test/readingEditionUi.test.mjs"],
+    [
+      "--test",
+      "test/readingEditionUi.test.mjs",
+      "test/packageMetadata.test.mjs",
+    ],
     { stdio: "inherit" },
   );
   process.exitCode = ui.status ?? 1;

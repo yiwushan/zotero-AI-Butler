@@ -1399,6 +1399,7 @@ export type FluentMessageId =
   | 'reader-toolbar-error-no-item'
   | 'reader-toolbar-error-no-parent'
   | 'reader-toolbar-error-open-failed'
+  | 'reading-edition-addon-unavailable'
   | 'reading-edition-agent-disabled'
   | 'settings-about-feature-auto-scan-desc'
   | 'settings-about-feature-auto-scan-title'

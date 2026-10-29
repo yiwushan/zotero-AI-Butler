@@ -1296,3 +1296,4 @@ llm-error-incomplete-output = Output is incomplete ({ $reason }). The task was n
 note-generator-incomplete-draft = Incomplete AI draft
 llm-error-invalid-output-tokens = Invalid output token budget { $value }; the known model limit is { $limit }.
 reading-edition-agent-disabled = Agent is disabled in the reading edition.
+reading-edition-addon-unavailable = The reading edition add-on was not found; its automatic update setting could not be changed.

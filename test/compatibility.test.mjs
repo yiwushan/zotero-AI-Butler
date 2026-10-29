@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { validateZoteroManifest } from "../scripts/check-package.mjs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath, URL } from "node:url";
 import { setTimeout, clearTimeout } from "node:timers";
@@ -404,6 +405,7 @@ test("one XPI contains both host manifests without lowering modern support", () 
     ),
   );
   const manifest = JSON.parse(zip.readAsText("manifest.json"));
+  validateZoteroManifest(manifest);
   assert.equal(manifest.applications.zotero.strict_min_version, "7.0.0");
   assert.equal(manifest.applications.zotero.strict_max_version, "10.*");
   const legacy = zip.readAsText("install.rdf");

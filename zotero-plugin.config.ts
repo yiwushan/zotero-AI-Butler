@@ -13,8 +13,6 @@ export default defineConfig({
     "https://github.com/{{owner}}/{{repo}}/releases/download/v{{version}}/{{xpiName}}.xpi",
 
   build: {
-    // Keep the custom manifest without an official automatic update feed.
-    makeManifest: { enable: false },
     hooks: {
       "build:bundle": buildCompatibility,
     },

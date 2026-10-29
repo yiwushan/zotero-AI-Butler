@@ -4,6 +4,7 @@ import {
   applyReadingEditionDefaults,
   CHAT_ENABLED,
   AGENT_ENABLED,
+  disableReadingEditionAutoUpdates,
 } from "../src/modules/edition";
 import {
   getContextMenuItemVisibility,
@@ -46,6 +47,42 @@ describe("Reading edition", function () {
       else Zotero.Prefs.set(prefName(key), value as any, true);
     }
   });
+
+  for (const legacy of [false, true]) {
+    it(`disables only this add-on's automatic updates (${legacy ? "legacy" : "modern"})`, async function () {
+      const globals = globalThis as unknown as Record<string, unknown>;
+      const original = globals.ChromeUtils;
+      const installed = { applyBackgroundUpdates: 1 };
+      const other = { applyBackgroundUpdates: 1 };
+      const imported: string[] = [];
+      const loadManager = (uri: string) => {
+        imported.push(uri);
+        return {
+          AddonManager: {
+            AUTOUPDATE_DISABLE: 0,
+            getAddonByID: async (id: string) => {
+              expect(id).to.equal(config.addonID);
+              return id === config.addonID ? installed : other;
+            },
+          },
+        };
+      };
+      globals.ChromeUtils = legacy
+        ? { import: loadManager }
+        : { importESModule: loadManager };
+      try {
+        await disableReadingEditionAutoUpdates();
+        expect(installed.applyBackgroundUpdates).to.equal(0);
+        expect(other.applyBackgroundUpdates).to.equal(1);
+        expect(imported).to.deep.equal([
+          `resource://gre/modules/AddonManager.${legacy ? "jsm" : "sys.mjs"}`,
+        ]);
+      } finally {
+        if (original === undefined) delete globals.ChromeUtils;
+        else globals.ChromeUtils = original;
+      }
+    });
+  }
 
   it("forces chat off even when old preferences enable all chat entries", function () {
     Zotero.Prefs.set(

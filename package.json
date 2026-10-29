@@ -1,7 +1,7 @@
 {
   "name": "zotero-ai-butler",
   "type": "module",
-  "version": "5.1.1-doubao-lite.1",
+  "version": "5.1.1-doubao-lite.2",
   "description": "Your personal AI butler, automatically and meticulously reads papers and summarizes notes.",
   "config": {
     "addonName": "zotero-ai-butler",
@@ -24,7 +24,7 @@
     "start": "zotero-plugin serve",
     "prebuild": "node ./scripts/check-i18n.mjs",
     "build": "zotero-plugin build && tsc --noEmit",
-    "postbuild": "node ./scripts/check-i18n-build.mjs",
+    "postbuild": "node ./scripts/check-i18n-build.mjs && node ./scripts/check-package.mjs",
     "lint:check": "prettier --check . && node --require ./scripts/eslint-typescript-compat.cjs ./node_modules/eslint/bin/eslint.js .",
     "lint:fix": "prettier --write . && node --require ./scripts/eslint-typescript-compat.cjs ./node_modules/eslint/bin/eslint.js . --fix",
     "release": "zotero-plugin release",

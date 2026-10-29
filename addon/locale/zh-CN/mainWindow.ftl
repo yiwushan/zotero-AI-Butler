@@ -1296,3 +1296,4 @@ llm-error-incomplete-output = 输出未完成（{ $reason }），任务未标记
 note-generator-incomplete-draft = AI 未完成草稿
 llm-error-invalid-output-tokens = 输出 token 数 { $value } 无效；已知模型上限为 { $limit }。
 reading-edition-agent-disabled = 阅读精简版已关闭 Agent。
+reading-edition-addon-unavailable = 未找到阅读精简版插件，无法更改其自动更新设置。
