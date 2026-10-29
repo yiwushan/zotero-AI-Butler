@@ -1,5 +1,11 @@
 # Zotero Plugin: **zotero-AI-Butler [AI Butler]**
 
+> **Doubao custom edition: discontinued / archived (2026-10-29)**
+>
+> This is `yiwushan`'s custom fork, not an official upstream release. The maintainer has stopped development because the free model access previously relied on no longer meets their needs. Source code and the final package are retained for archival reference. This does not imply that upstream development has stopped or make a claim about all current provider pricing or free allowances.
+>
+> Final version: [5.1.1-doubao-lite.3](https://github.com/yiwushan/zotero-AI-Butler/releases/tag/v5.1.1-doubao-lite.3). It retains Doubao / Volcano Ark, parsed MinerU Markdown / ZIP sources, and note preview fixes; Agent and user chat remain disabled. See the [archive record](./ARCHIVE.md) and [reading edition notes](./doc/doubao-reading-edition.md). The upstream documentation below includes features not enabled in this custom edition.
+
 <!-- Badges -->
 <p>
     <a href="https://github.com/steven-jianhao-li/zotero-AI-Butler/releases/latest"><img src="https://img.shields.io/github/v/release/steven-jianhao-li/zotero-AI-Butler" alt="Latest Release"></a>

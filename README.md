@@ -1,5 +1,11 @@
 # Zotero插件：**zotero-AI-Butler【AI 管家】**
 
+> **豆包定制版停止维护 / 封档（2026-10-29）**
+>
+> 这是 `yiwushan` 的豆包定制分支，不是原作者的官方发行版。由于维护者原先依赖的免费模型使用条件不再满足需求，本分支停止维护，仅保留源码和最终安装包供存档参考。此决定不代表上游项目停止维护，也不对服务商当前的所有免费额度或定价作出判断。
+>
+> 最终版本：[5.1.1-doubao-lite.3](https://github.com/yiwushan/zotero-AI-Butler/releases/tag/v5.1.1-doubao-lite.3)。保留豆包 / 火山 Ark、MinerU Markdown / ZIP 接入及笔记预览修复，Agent 和用户聊天保持关闭。查看[封档说明](./ARCHIVE.md)和[阅读版说明](./doc/doubao-reading-edition.md)。下方保留的上游功能介绍不代表本定制版全部开放这些功能。
+
 <!-- Badges -->
 <p>
     <a href="https://github.com/steven-jianhao-li/zotero-AI-Butler/releases/latest"><img src="https://img.shields.io/github/v/release/steven-jianhao-li/zotero-AI-Butler" alt="Latest Release"></a>
