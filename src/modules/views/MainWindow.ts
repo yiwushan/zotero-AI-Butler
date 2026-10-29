@@ -28,6 +28,7 @@
  */
 
 import { config } from "../../../package.json";
+import { prepareDocument } from "../../compatibility/document";
 import { DashboardView } from "./DashboardView";
 import { SummaryView } from "./SummaryView";
 import { TaskQueueView } from "./TaskQueueView";
@@ -100,6 +101,23 @@ export class MainWindow {
 
   /** 当前激活的标签页 */
   private activeTab: TabType = "dashboard";
+
+  private navigationListeners = new Set<() => void>();
+
+  public onNavigationChange(listener: () => void): () => void {
+    this.navigationListeners.add(listener);
+    return () => this.navigationListeners.delete(listener);
+  }
+
+  private notifyNavigationChange(): void {
+    for (const listener of Array.from(this.navigationListeners)) {
+      try {
+        listener();
+      } catch (error) {
+        ztoolkit.log("[AI Butler] Navigation subscriber failed:", error);
+      }
+    }
+  }
 
   /** 视图容器 */
   private viewContainer: HTMLElement | null = null;
@@ -236,6 +254,8 @@ export class MainWindow {
           height: dialogSize.height,
           centerscreen: true,
           resizable: true,
+          // Use native window controls, including title-bar maximize/restore.
+          noDialogMode: true,
         });
       this.isOpen = true;
 
@@ -298,8 +318,8 @@ export class MainWindow {
     const { width: screenWidth, height: screenHeight } =
       this.getAvailableScreenSize();
     const lowResolution = screenWidth <= 1440 || screenHeight <= 900;
-    const targetWidth = lowResolution ? 820 : 950;
-    const targetHeight = lowResolution ? 560 : 750;
+    const targetWidth = 1100;
+    const targetHeight = 800;
     const horizontalMargin = lowResolution ? 96 : 160;
     const verticalMargin = lowResolution ? 128 : 160;
     const width = this.clampDialogDimension(
@@ -410,6 +430,7 @@ export class MainWindow {
     this.dialog = null;
     this.isOpen = false;
     this.resetUIState();
+    this.notifyNavigationChange();
 
     if (this.isDialogHandleActive(dialog)) {
       try {
@@ -462,6 +483,7 @@ export class MainWindow {
     }
 
     const doc = dialog.window.document;
+    prepareDocument(doc);
     const tryInit = () => {
       if (this.dialog !== dialog || !this.isDialogHandleActive(dialog)) {
         this.uiInitializing = false;
@@ -523,6 +545,7 @@ export class MainWindow {
       // 标记完成
       this.uiInitialized = true;
       this.uiInitializing = false;
+      this.notifyNavigationChange();
     };
 
     // 启动首次尝试
@@ -624,6 +647,7 @@ export class MainWindow {
       // 视图未实现,显示占位符
       this.showPlaceholder(tabId);
     }
+    if (this.uiInitialized) this.notifyNavigationChange();
   }
 
   public openLibraryScanner(target: AiNoteKind): void {
@@ -707,6 +731,7 @@ export class MainWindow {
     this.isOpening = false;
     this.dialog = null;
     this.resetUIState();
+    this.notifyNavigationChange();
 
     ztoolkit.log("[AI Butler] 主窗口已关闭");
   }

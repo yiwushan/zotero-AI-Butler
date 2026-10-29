@@ -5,6 +5,7 @@
  */
 
 import { getPref, setPref } from "../utils/prefs";
+import { CHAT_ENABLED } from "./edition";
 
 export const CONTEXT_MENU_ITEMS = [
   {
@@ -119,7 +120,7 @@ export const DEFAULT_CONTEXT_MENU_ITEM_VISIBILITY: ContextMenuVisibility = {
   dashboard: true,
   imageSummary: true,
   mindmap: true,
-  chatWithAI: true,
+  chatWithAI: CHAT_ENABLED,
   literatureReview: true,
   clearCollectionAiNotes: true,
   exportCollectionNotes: true,
@@ -129,10 +130,10 @@ export const DEFAULT_SIDEBAR_MODULE_VISIBILITY: SidebarModuleVisibility = {
   actionButtons: true,
   note: true,
   deepRead: true,
-  table: true,
-  imageSummary: true,
+  table: false,
+  imageSummary: false,
   mindmap: true,
-  quickChat: true,
+  quickChat: CHAT_ENABLED,
 };
 
 export const DEFAULT_SIDEBAR_MODULE_ORDER: SidebarModuleId[] = [
@@ -253,10 +254,12 @@ function parseOrder<T extends string>(
 }
 
 export function getContextMenuItemVisibility(): ContextMenuVisibility {
-  return parseVisibilityMap(
+  const visibility = parseVisibilityMap(
     getPref("contextMenuItemVisibility"),
     DEFAULT_CONTEXT_MENU_ITEM_VISIBILITY,
   );
+  if (!CHAT_ENABLED) visibility.chatWithAI = false;
+  return visibility;
 }
 
 export function isContextMenuItemEnabled(id: ContextMenuItemId): boolean {
@@ -305,14 +308,16 @@ export function setContextMenuCollapsed(collapsed: boolean): void {
 }
 
 export function getSidebarModuleVisibility(): SidebarModuleVisibility {
-  return parseVisibilityMap(
+  const visibility = parseVisibilityMap(
     getPref("sidebarModuleVisibility"),
     DEFAULT_SIDEBAR_MODULE_VISIBILITY,
   );
+  if (!CHAT_ENABLED) visibility.quickChat = false;
+  return visibility;
 }
 
 export function isSidebarModuleEnabled(id: SidebarModuleId): boolean {
-  if (id === "table" && !isTableFeatureEnabled()) return false;
+  // Sidebar visibility also controls access to existing results when generation is off.
   return getSidebarModuleVisibility()[id];
 }
 

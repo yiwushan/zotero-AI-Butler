@@ -55,7 +55,12 @@ pref("__prefsPrefix__.reasoningEffort", "default");
 pref("__prefsPrefix__.stream", true);
 pref("__prefsPrefix__.enablePromptCacheOptimization", true);
 pref("__prefsPrefix__.requestTimeout", "300000"); // 5分钟超时
-// MINERU API KEY
+pref("__prefsPrefix__.autoContinuationRounds", "1");
+// MinerU service configuration
+pref("__prefsPrefix__.mineruServiceMode", "official");
+pref("__prefsPrefix__.mineruCustomApiUrl", "");
+pref("__prefsPrefix__.mineruCustomApiFormat", "file-parse");
+pref("__prefsPrefix__.mineruCustomApiKey", "");
 pref("__prefsPrefix__.mineruApiKey", "");
 pref("__prefsPrefix__.mineruModelVersion", "vlm");
 pref("__prefsPrefix__.mineruSaveMarkdown", false);
@@ -108,13 +113,13 @@ pref("__prefsPrefix__.fontSize", "14");
 pref("__prefsPrefix__.autoScroll", true);
 pref("__prefsPrefix__.windowWidth", "900");
 pref("__prefsPrefix__.windowHeight", "700");
-pref("__prefsPrefix__.saveChatHistory", true);
+pref("__prefsPrefix__.saveChatHistory", false);
 pref("__prefsPrefix__.openTaskPanelOnSummon", false);
 pref("__prefsPrefix__.enableTableFeature", true);
 pref("__prefsPrefix__.contextMenuCollapsed", false);
 pref(
   "__prefsPrefix__.contextMenuItemVisibility",
-  '{"generateSummary":true,"multiRoundReanalyze":true,"dashboard":true,"imageSummary":true,"mindmap":true,"chatWithAI":true,"literatureReview":true,"clearCollectionAiNotes":true,"exportCollectionNotes":true}',
+  '{"generateSummary":true,"multiRoundReanalyze":true,"dashboard":true,"imageSummary":true,"mindmap":true,"chatWithAI":false,"literatureReview":true,"clearCollectionAiNotes":true,"exportCollectionNotes":true}',
 );
 pref(
   "__prefsPrefix__.contextMenuItemOrder",
@@ -122,12 +127,13 @@ pref(
 );
 pref(
   "__prefsPrefix__.sidebarModuleVisibility",
-  '{"actionButtons":true,"note":true,"table":true,"imageSummary":true,"mindmap":true,"quickChat":true}',
+  '{"actionButtons":true,"note":true,"deepRead":true,"table":false,"imageSummary":false,"mindmap":true,"quickChat":false}',
 );
 pref(
   "__prefsPrefix__.sidebarModuleOrder",
-  '["actionButtons","note","table","imageSummary","mindmap","quickChat"]',
+  '["actionButtons","note","deepRead","table","imageSummary","mindmap","quickChat"]',
 );
+pref("__prefsPrefix__.sidebarActiveTab", "deepRead");
 pref("__prefsPrefix__.sidebarNoteCollapsed", false);
 pref("__prefsPrefix__.sidebarImageCollapsed", false);
 pref("__prefsPrefix__.quickChatSuppressNewConversationWarning", false);
@@ -139,6 +145,10 @@ pref("__prefsPrefix__.noteStrategy", "skip");
 // ==================== AI 笔记导出配置 ====================
 pref("__prefsPrefix__.noteExportEnabled", false);
 pref("__prefsPrefix__.noteExportRootPath", "");
+pref(
+  "__prefsPrefix__.noteExportFilenameTemplate",
+  "{collectionPath} - {title} - {noteType}",
+);
 pref("__prefsPrefix__.noteExportWatchedCollections", "[]");
 pref("__prefsPrefix__.noteExportIncludeSubcollections", true);
 pref(

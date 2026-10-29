@@ -5,6 +5,7 @@ import {
   type LLMEndpoint,
 } from "../src/modules/llmEndpointManager";
 import LLMService from "../src/modules/llmService";
+import { getString } from "../src/utils/locale";
 
 const prefKeys = [
   "llmEndpoints",
@@ -345,7 +346,7 @@ describe("LLMEndpointManager", function () {
     LLMEndpointManager.saveEndpoints([makeEndpoint("a", false)]);
 
     expect(() => LLMEndpointManager.prepareRoute()).to.throw(
-      "未配置可用的 LLM Endpoint",
+      getString("llm-error-no-enabled-endpoints"),
     );
   });
 

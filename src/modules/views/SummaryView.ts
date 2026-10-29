@@ -24,6 +24,7 @@
  */
 
 import { BaseView } from "./BaseView";
+import { CHAT_ENABLED } from "../edition";
 import { MainWindow } from "./MainWindow";
 import { marked } from "marked";
 import { getPref } from "../../utils/prefs";
@@ -70,8 +71,7 @@ export class SummaryView extends BaseView {
 
   /** Deep-read single-slot retry handler */
   private deepReadRetryHandler:
-    | ((slotId: string) => void | Promise<void>)
-    | null = null;
+    ((slotId: string) => void | Promise<void>) | null = null;
 
   /** 返回任务队列按钮回调函数 (支持 Promise, 以便外部执行异步逻辑) */
   private onQueueButtonCallback: (() => void | Promise<void>) | null = null;
@@ -87,9 +87,6 @@ export class SummaryView extends BaseView {
 
   /** 用户是否手动滚动过 */
   private userHasScrolled: boolean = false;
-
-  /** 是否启用自动滚动 */
-  private autoScrollEnabled: boolean = true;
 
   /** 上次滚动位置 */
   private lastScrollTop: number = 0;
@@ -344,11 +341,11 @@ export class SummaryView extends BaseView {
     });
 
     // 创建追问容器 (默认隐藏)
-    this.chatContainer = this.createChatContainer();
+    this.chatContainer = CHAT_ENABLED ? this.createChatContainer() : null;
 
     container.appendChild(header);
     container.appendChild(this.scrollContainer);
-    container.appendChild(this.chatContainer);
+    if (this.chatContainer) container.appendChild(this.chatContainer);
     container.appendChild(footer);
 
     return container;
@@ -504,6 +501,7 @@ export class SummaryView extends BaseView {
    * @private
    */
   private async handleChatSend(): Promise<void> {
+    if (!CHAT_ENABLED) return;
     if (!this.chatInput || !this.chatSendButton) return;
     if (this.isChatting) {
       this.abortActiveChat();
@@ -568,14 +566,13 @@ export class SummaryView extends BaseView {
     const assistantMessageContainer = this.appendChatMessage("assistant", "");
 
     // 将“用户+助手”两条消息包装为一张卡片，便于整体删除与管理
-    let pairContainer: HTMLElement | null = null;
     const pairId = this.generatePairId();
     if (
       this.outputContainer &&
       userMessageElement &&
       assistantMessageContainer
     ) {
-      pairContainer = this.createElement("div", {
+      const pairContainer = this.createElement("div", {
         className: "ai-butler-chat-pair",
         styles: {
           position: "relative",
@@ -867,48 +864,6 @@ export class SummaryView extends BaseView {
     return `pair_${Date.now()}_${this.pairIdCounter}`;
   }
 
-  private async findChatNote(item: Zotero.Item): Promise<Zotero.Item | null> {
-    const noteIDs = (item as any).getNotes?.() || [];
-    for (const nid of noteIDs) {
-      try {
-        const n = await Zotero.Items.getAsync(nid);
-        if (!n) continue;
-        const tags: Array<{ tag: string }> = (n as any).getTags?.() || [];
-        const hasChatTag = tags.some((t) => t.tag === "AI-Butler-Chat");
-        const html: string = (n as any).getNote?.() || "";
-        const titleMatch = /<h2>\s*AI 管家\s*-\s*后续追问\s*-/.test(html);
-        if (hasChatTag || titleMatch) {
-          return n as Zotero.Item;
-        }
-      } catch (e) {
-        continue;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * 获取或创建“AI管家-后续追问-论文名”独立笔记
-   */
-  private async getOrCreateChatNote(item: Zotero.Item): Promise<Zotero.Item> {
-    const existingNote = await this.findChatNote(item);
-    if (existingNote) return existingNote;
-
-    const title =
-      (item.getField("title") as string) || getString("summary-untitled-paper");
-
-    // 创建新笔记
-    const note = new Zotero.Item("note");
-    note.libraryID = item.libraryID;
-    note.parentID = item.id;
-    const header = `<h2>${getString("summary-chat-note-title", { args: { title: this.escapeHtml(title) } })}</h2>`;
-    note.setNote(header);
-    note.addTag("AI-Butler-Chat");
-    await note.saveTx();
-    return note;
-  }
-
   /**
    * 将对话对追加到 AI 精读笔记（带可解析标记，便于恢复）
    */
@@ -1160,6 +1115,7 @@ export class SummaryView extends BaseView {
     isBase64: boolean,
     aiSummary?: string,
   ): void {
+    if (!CHAT_ENABLED) return;
     this.currentItemId = itemId;
     this.currentPdfContent = pdfContent;
     this.currentIsBase64 = isBase64;
@@ -1224,6 +1180,7 @@ export class SummaryView extends BaseView {
    * @param itemId 文献条目 ID
    */
   public async loadItemForChat(itemId: number): Promise<void> {
+    if (!CHAT_ENABLED) return;
     try {
       // 清空并显示加载提示
       this.clear();
@@ -1493,7 +1450,7 @@ export class SummaryView extends BaseView {
         item,
         "deepRead",
       );
-      const legacyChatNote = await this.findChatNote(item);
+      const legacyChatNote = await AiNoteService.findLegacyChatNote(item);
       const html = [
         deepReadRecord?.rawHtml || "",
         ((legacyChatNote as any)?.getNote?.() as string | undefined) || "",
@@ -1684,18 +1641,15 @@ export class SummaryView extends BaseView {
     // 应用主题
     this.applyTheme();
 
-    // 应用用户首选项: 字号与自动滚动
+    // 应用用户首选项: 字号
     try {
       const fontSize =
         parseInt(((getPref as any)("fontSize") as string) || "14", 10) || 14;
       if (this.container) {
         (this.container as HTMLElement).style.fontSize = `${fontSize}px`;
       }
-      const auto = (getPref as any)("autoScroll") as boolean;
-      this.autoScrollEnabled =
-        auto === undefined || auto === null ? true : !!auto;
     } catch (e) {
-      ztoolkit.log("[AI Butler] 应用字体或滚动首选项失败:", e);
+      ztoolkit.log("[AI Butler] 应用字体首选项失败:", e);
     }
   }
 
@@ -1729,7 +1683,11 @@ export class SummaryView extends BaseView {
           return;
         }
 
-        const styleEl = doc.createElement("style");
+        // XUL style nodes display CSS as text and can push the library toolbar offscreen.
+        const styleEl = doc.createElementNS(
+          "http://www.w3.org/1999/xhtml",
+          "style",
+        );
         styleEl.id = "ai-butler-katex-style";
         styleEl.textContent = katexCss;
 
@@ -1778,14 +1736,22 @@ export class SummaryView extends BaseView {
    * @private
    */
   private scrollToBottom(): void {
-    if (!this.scrollArea || this.userHasScrolled || !this.autoScrollEnabled)
+    if (
+      !this.scrollArea ||
+      this.userHasScrolled ||
+      getPref("autoScroll") === false
+    )
       return;
 
     const area = this.scrollArea;
 
     // 使用 setTimeout 确保在 DOM 更新后滚动
     setTimeout(() => {
-      if (area) {
+      if (
+        this.scrollArea === area &&
+        !this.userHasScrolled &&
+        getPref("autoScroll") !== false
+      ) {
         area.scrollTop = area.scrollHeight;
       }
     }, 0);
@@ -1939,7 +1905,7 @@ export class SummaryView extends BaseView {
     // 检查是否已添加
     if (doc.getElementById("ai-butler-spinner-style")) return;
 
-    const style = doc.createElement("style");
+    const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
     style.id = "ai-butler-spinner-style";
     style.textContent = `
       @keyframes spin {

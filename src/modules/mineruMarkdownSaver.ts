@@ -22,6 +22,24 @@ export class MineruMarkdownSaver {
     return Boolean(getPref("mineruSaveMarkdown" as any));
   }
 
+  public static async hasCachedMarkdown(item: Zotero.Item): Promise<boolean> {
+    const attachment = await this.findMarkdownAttachment(item);
+    if (attachment) {
+      const path = await attachment.getFilePathAsync();
+      if (path && (await IOUtils.exists(path))) return true;
+    }
+    const rootPath = String(getPref("mineruExternalPath" as any) || "").trim();
+    if (getPref("mineruSyncExternal" as any) && rootPath) {
+      for (const path of this.getExternalMarkdownCandidatePaths(
+        rootPath,
+        item,
+      )) {
+        if (await IOUtils.exists(path)) return true;
+      }
+    }
+    return false;
+  }
+
   public static async readCachedMarkdown(
     item: Zotero.Item,
   ): Promise<string | null> {
@@ -248,6 +266,7 @@ export class MineruMarkdownSaver {
   ): Promise<Zotero.Item | null> {
     for (const attachmentID of item.getAttachments()) {
       const attachment = await Zotero.Items.getAsync(attachmentID);
+      if (!attachment) continue;
       const title = String(attachment.getField("title") || "");
       const contentType = String(attachment.attachmentContentType || "");
       const tags = (attachment.getTags?.() || []).map((tag: any) => tag.tag);

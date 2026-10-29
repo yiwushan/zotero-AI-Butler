@@ -205,6 +205,28 @@ export async function parseMineruArchive(
 }
 
 export class ParsedMarkdownExtractor {
+  /** Probe local candidates without downloading attachments or inflating archives. */
+  public static async hasAvailableSource(item: Zotero.Item): Promise<boolean> {
+    const parent = await this.resolveParentItem(item);
+    const attachments = await this.getChildAttachments(parent);
+    const source = await this.findOldestPdf(parent);
+    const localCache = source && this.getLlmForZoteroCachePath(source);
+    if (localCache && (await IOUtils.exists(localCache))) return true;
+
+    for (const attachment of attachments) {
+      const searchText = getAttachmentSearchText(attachment);
+      const isCandidate =
+        isMarkdownAttachment(attachment) ||
+        (isZipAttachment(attachment) &&
+          (searchText.startsWith(LLM_FOR_ZOTERO_PACKAGE_PREFIX) ||
+            /(mineru|markdown)/i.test(searchText)));
+      if (!isCandidate) continue;
+      const path = await attachment.getFilePathAsync();
+      if (path && (await IOUtils.exists(path))) return true;
+    }
+    return MineruMarkdownSaver.hasCachedMarkdown(parent);
+  }
+
   public static async extractFromItem(
     item: Zotero.Item,
     sourceAttachment?: Zotero.Item,
@@ -310,7 +332,7 @@ export class ParsedMarkdownExtractor {
     const result: Zotero.Item[] = [];
     for (const id of item.getAttachments?.() || []) {
       const attachment = await Zotero.Items.getAsync(id);
-      if (attachment?.isAttachment?.()) result.push(attachment);
+      if (attachment && attachment.isAttachment?.()) result.push(attachment);
     }
     return result.sort((a, b) =>
       String(b.dateModified || b.dateAdded || "").localeCompare(
@@ -339,14 +361,8 @@ export class ParsedMarkdownExtractor {
     sourceAttachment: Zotero.Item,
   ): Promise<ParsedMarkdownResult | null> {
     try {
-      const dataDir = String((Zotero as any).DataDirectory?.dir || "").trim();
-      if (!dataDir || !sourceAttachment.id) return null;
-      const filePath = PathUtils.join(
-        dataDir,
-        "llm-for-zotero-mineru",
-        String(sourceAttachment.id),
-        "full.md",
-      );
+      const filePath = this.getLlmForZoteroCachePath(sourceAttachment);
+      if (!filePath) return null;
       if (!(await IOUtils.exists(filePath))) return null;
       const markdown = await Zotero.File.getContentsAsync(filePath, "utf-8");
       if (typeof markdown !== "string" || !markdown.trim()) return null;
@@ -362,5 +378,16 @@ export class ParsedMarkdownExtractor {
       );
       return null;
     }
+  }
+
+  private static getLlmForZoteroCachePath(source: Zotero.Item): string | null {
+    const dataDir = String((Zotero as any).DataDirectory?.dir || "").trim();
+    if (!dataDir || !source.id) return null;
+    return PathUtils.join(
+      dataDir,
+      "llm-for-zotero-mineru",
+      String(source.id),
+      "full.md",
+    );
   }
 }

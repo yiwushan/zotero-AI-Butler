@@ -44,6 +44,11 @@ declare namespace _ZoteroTypes {
       "stream": boolean;
       "enablePromptCacheOptimization": boolean;
       "requestTimeout": string;
+      "autoContinuationRounds": string;
+      "mineruServiceMode": string;
+      "mineruCustomApiUrl": string;
+      "mineruCustomApiFormat": string;
+      "mineruCustomApiKey": string;
       "mineruApiKey": string;
       "mineruModelVersion": string;
       "mineruSaveMarkdown": boolean;
@@ -90,6 +95,7 @@ declare namespace _ZoteroTypes {
       "contextMenuItemOrder": string;
       "sidebarModuleVisibility": string;
       "sidebarModuleOrder": string;
+      "sidebarActiveTab": string;
       "sidebarNoteCollapsed": boolean;
       "sidebarImageCollapsed": boolean;
       "quickChatSuppressNewConversationWarning": boolean;
@@ -97,6 +103,7 @@ declare namespace _ZoteroTypes {
       "noteStrategy": string;
       "noteExportEnabled": boolean;
       "noteExportRootPath": string;
+      "noteExportFilenameTemplate": string;
       "noteExportWatchedCollections": string;
       "noteExportIncludeSubcollections": boolean;
       "noteExportFormats": string;

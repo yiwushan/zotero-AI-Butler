@@ -5,6 +5,7 @@
 import { getPref, setPref } from "../../../utils/prefs";
 import { getString } from "../../../utils/locale";
 import { AutoScanManager } from "../../autoScanManager";
+import { CHAT_ENABLED } from "../../edition";
 import {
   CONTEXT_MENU_ITEMS,
   DEFAULT_CONTEXT_MENU_ITEM_VISIBILITY,
@@ -38,17 +39,19 @@ import {
 
 export class UiSettingsPage {
   private container: HTMLElement;
+  private readonly document: Document;
   private preview!: HTMLElement;
   private autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(container: HTMLElement) {
     this.container = container;
+    this.document = container.ownerDocument!;
   }
 
   public render(): void {
     this.container.innerHTML = "";
 
-    const title = Zotero.getMainWindow().document.createElement("h2");
+    const title = this.document.createElement("h2");
     title.textContent = getString("settings-ui-title");
     Object.assign(title.style, {
       color: "#59c0bc",
@@ -63,7 +66,7 @@ export class UiSettingsPage {
       createNotice(getString("settings-ui-description")),
     );
 
-    const form = Zotero.getMainWindow().document.createElement("div");
+    const form = this.document.createElement("div");
     Object.assign(form.style, { maxWidth: "820px" });
 
     // 自动滚动
@@ -122,13 +125,14 @@ export class UiSettingsPage {
       "saveChatHistory",
       !!saveChatHistory,
     );
-    form.appendChild(
-      createFormGroup(
-        getString("settings-ui-save-chat-history"),
-        saveChatHistoryBox,
-        getString("settings-ui-save-chat-history-help"),
-      ),
-    );
+    if (CHAT_ENABLED)
+      form.appendChild(
+        createFormGroup(
+          getString("settings-ui-save-chat-history"),
+          saveChatHistoryBox,
+          getString("settings-ui-save-chat-history-help"),
+        ),
+      );
 
     const openTaskPanelOnSummon =
       (getPref("openTaskPanelOnSummon" as any) as boolean) ?? false;
@@ -274,8 +278,10 @@ export class UiSettingsPage {
         (getPref("autoScanDeepReadEnabled" as any) as boolean) ??
         false;
       const saveChatHistoryVal =
-        (form.querySelector("#setting-saveChatHistory") as HTMLInputElement)
-          ?.checked ?? true;
+        CHAT_ENABLED &&
+        ((form.querySelector("#setting-saveChatHistory") as HTMLInputElement)
+          ?.checked ??
+          false);
       const openTaskPanelOnSummonVal =
         (
           form.querySelector(
@@ -352,7 +358,7 @@ export class UiSettingsPage {
     // 预览区域（移除字号预览，不再提供字体大小设置）
 
     // 按钮
-    const actions = Zotero.getMainWindow().document.createElement("div");
+    const actions = this.document.createElement("div");
     Object.assign(actions.style, {
       display: "flex",
       gap: "12px",
@@ -375,7 +381,7 @@ export class UiSettingsPage {
       setPref("autoScan", true as any);
       setPref("autoScanSummaryEnabled" as any, true as any);
       setPref("autoScanDeepReadEnabled" as any, false as any);
-      setPref("saveChatHistory", true as any);
+      setPref("saveChatHistory", CHAT_ENABLED as any);
       setPref("openTaskPanelOnSummon" as any, false as any);
       setPref("enableTableFeature", true);
       setPref("noteStrategy" as any, "skip");
@@ -418,7 +424,7 @@ export class UiSettingsPage {
   }
 
   private createSettingsPanel(title: string, description: string): HTMLElement {
-    const doc = Zotero.getMainWindow().document;
+    const doc = this.document;
     const panel = doc.createElement("div");
     Object.assign(panel.style, {
       border: "1px solid var(--ai-border)",
@@ -459,7 +465,7 @@ export class UiSettingsPage {
     setOrder: (order: ContextMenuItemId[]) => void,
     onAutoSave?: () => void,
   ): HTMLElement {
-    const doc = Zotero.getMainWindow().document;
+    const doc = this.document;
     const panel = this.createSettingsPanel(
       getString("settings-ui-context-menu-title"),
       getString("settings-ui-context-menu-description"),
@@ -530,6 +536,7 @@ export class UiSettingsPage {
       order.forEach((itemId, index) => {
         const item = CONTEXT_MENU_ITEMS.find((entry) => entry.id === itemId);
         if (!item) return;
+        if (!CHAT_ENABLED && item.id === "chatWithAI") return;
 
         const row = doc.createElement("div");
         Object.assign(row.style, {
@@ -635,7 +642,7 @@ export class UiSettingsPage {
     setOrder: (order: SidebarModuleId[]) => void,
     onAutoSave?: () => void,
   ): HTMLElement {
-    const doc = Zotero.getMainWindow().document;
+    const doc = this.document;
     const panel = this.createSettingsPanel(
       getString("settings-ui-sidebar-modules-title"),
       getString("settings-ui-sidebar-modules-description"),
@@ -653,6 +660,7 @@ export class UiSettingsPage {
       order.forEach((moduleId, index) => {
         const module = SIDEBAR_MODULES.find((item) => item.id === moduleId);
         if (!module) return;
+        if (!CHAT_ENABLED && module.id === "quickChat") return;
 
         const row = doc.createElement("div");
         Object.assign(row.style, {
@@ -742,7 +750,7 @@ export class UiSettingsPage {
     onMoveUp: () => void,
     onMoveDown: () => void,
   ): HTMLElement {
-    const doc = Zotero.getMainWindow().document;
+    const doc = this.document;
     const orderControls = doc.createElement("div");
     Object.assign(orderControls.style, {
       display: "flex",
@@ -779,7 +787,7 @@ export class UiSettingsPage {
     title: string,
     disabled: boolean,
   ): HTMLButtonElement {
-    const doc = Zotero.getMainWindow().document;
+    const doc = this.document;
     const button = doc.createElement("button");
     button.type = "button";
     button.textContent = text;
@@ -803,7 +811,7 @@ export class UiSettingsPage {
     try {
       const { refreshCurrentItemPaneSection } =
         await import("../../ItemPaneSection");
-      await refreshCurrentItemPaneSection();
+      await refreshCurrentItemPaneSection({ force: true });
     } catch (error) {
       ztoolkit.log("[AI-Butler] 刷新侧边栏个性化设置失败:", error);
     }

@@ -23,6 +23,8 @@
  */
 
 import { getString, initLocale, getLocaleID } from "./utils/locale";
+import { ContentExtractor } from "./modules/contentExtractor";
+import { getSelectedCollection } from "./utils/collectionSelection";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { TaskQueueManager } from "./modules/taskQueue";
@@ -41,6 +43,8 @@ import {
 import { MainWindow } from "./modules/views/MainWindow";
 import { AutoScanManager } from "./modules/autoScanManager";
 import { AutoNoteExportManager } from "./modules/autoNoteExportManager";
+import { DEFAULT_NOTE_EXPORT_FILENAME_TEMPLATE } from "./modules/noteExportNaming";
+import { CHAT_ENABLED, applyReadingEditionDefaults } from "./modules/edition";
 import {
   CONTEXT_MENU_ITEMS,
   DEFAULT_CONTEXT_MENU_COLLAPSED,
@@ -64,6 +68,13 @@ import {
   shouldUpdatePrompt,
 } from "./utils/prompts";
 import { maybeOpenOnboardingTutorialOnStartup } from "./modules/onboarding";
+import { isLegacyHost } from "./compatibility/host";
+import {
+  registerLegacyWindow,
+  unregisterLegacyWindow,
+  registerLegacyReaderToolbar,
+  unregisterLegacyUi,
+} from "./compatibility/legacyUi";
 
 /**
  * 插件启动钩子函数
@@ -95,6 +106,7 @@ async function onStartup() {
   // 初始化插件默认配置
   // 确保即使用户首次使用,也能有合理的默认设置
   initializeDefaultPrefsOnStartup();
+  applyReadingEditionDefaults();
 
   // 注册插件偏好设置面板
   // 用户可以通过 Zotero 设置界面访问和修改插件配置
@@ -148,27 +160,29 @@ async function onStartup() {
  * @returns Promise<void> 窗口初始化完成的承诺
  */
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
+  if (!windowListenerCleanups.has(win)) windowListenerCleanups.set(win, []);
+  registerLegacyWindow(win);
   // 为当前窗口创建专用的工具包实例
   // 每个窗口独立的工具包确保UI操作不会相互干扰
   addon.data.ztoolkit = createZToolkit();
 
   // 注入插件主窗口的国际化资源
-  win.MozXULElement.insertFTLIfNeeded(
+  win.MozXULElement?.insertFTLIfNeeded?.(
     `${addon.data.config.addonRef}-addon.ftl`,
   );
-  win.MozXULElement.insertFTLIfNeeded(
+  win.MozXULElement?.insertFTLIfNeeded?.(
     `${addon.data.config.addonRef}-mainWindow.ftl`,
   );
 
   // 注入偏好设置窗口的国际化资源
   // 即使主窗口尚未打开偏好设置,也预先加载资源文件
-  win.MozXULElement.insertFTLIfNeeded(
+  win.MozXULElement?.insertFTLIfNeeded?.(
     `${addon.data.config.addonRef}-preferences.ftl`,
   );
 
   // 注册右键上下文菜单
   // 为用户提供快速访问插件功能的入口
-  registerContextMenuItem();
+  registerContextMenuItem(win);
   bindUICustomizationRefreshEvent(win);
 
   // 注册文献库工具栏按钮
@@ -204,6 +218,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
  * - 支持国际化标题和图标定制
  */
 function registerPrefsPane() {
+  if (isLegacyHost()) return;
   const prefOptions = {
     pluginID: config.addonID, // 插件唯一标识
     src: rootURI + "content/preferences.xhtml", // 配置页面 XHTML 文件路径
@@ -281,11 +296,13 @@ function initializeDefaultPrefsOnStartup() {
     contextMenuItemOrder: DEFAULT_CONTEXT_MENU_ITEM_ORDER_PREF,
     sidebarModuleVisibility: DEFAULT_SIDEBAR_MODULE_VISIBILITY_PREF,
     sidebarModuleOrder: DEFAULT_SIDEBAR_MODULE_ORDER_PREF,
+    sidebarActiveTab: "deepRead",
     openTaskPanelOnSummon: false,
     autoScanSummaryEnabled: true,
     autoScanDeepReadEnabled: false,
     noteExportEnabled: false,
     noteExportRootPath: "",
+    noteExportFilenameTemplate: DEFAULT_NOTE_EXPORT_FILENAME_TEMPLATE,
     noteExportWatchedCollections: "[]",
     noteExportIncludeSubcollections: true,
     noteExportFormats:
@@ -304,8 +321,7 @@ function initializeDefaultPrefsOnStartup() {
       // 特殊处理:检查提示词是否需要升级
       if (key === "summaryPrompt") {
         const currentPromptVersion = getPref("promptVersion" as any) as
-          | number
-          | undefined;
+          number | undefined;
         const currentPrompt = currentValue as string | undefined;
 
         // 如果提示词版本过时,自动升级到最新版本
@@ -356,6 +372,7 @@ async function openAIButlerDashboardFromUnifiedEntry(): Promise<void> {
 }
 
 const UI_CUSTOMIZATION_CHANGED_EVENT = "ai-butler-ui-customization-changed";
+const windowListenerCleanups = new Map<Window, (() => void)[]>();
 
 const CONTEXT_MENU_DOM_IDS: Record<ContextMenuItemId, string> = {
   generateSummary: "zotero-itemmenu-ai-butler-summary",
@@ -381,16 +398,121 @@ const CONTEXT_MENU_ROOT_DOM_IDS: Record<ContextMenuScope, string> = {
   collection: "zotero-collectionmenu-ai-butler-root",
 };
 
-function unregisterContextMenuItems(menu: {
-  unregister?: (menuId: string) => void;
-}): void {
-  if (typeof menu.unregister !== "function") return;
+const CONTEXT_MENU_POPUP_IDS: Record<ContextMenuScope, string[]> = {
+  item: ["zotero-itemmenu"],
+  collection: ["zotero-collectionmenu"],
+};
+
+function getContextMenuPopup(
+  doc: Document,
+  scope: ContextMenuScope,
+): XUL.MenuPopup | null {
+  for (const id of CONTEXT_MENU_POPUP_IDS[scope]) {
+    const popup = doc.getElementById(id) as XUL.MenuPopup | null;
+    if (popup) return popup;
+  }
+  return null;
+}
+
+function unregisterContextMenuItems(doc: Document): void {
   for (const menuId of Object.values(CONTEXT_MENU_ROOT_DOM_IDS)) {
-    menu.unregister(menuId);
+    doc.getElementById(menuId)?.remove();
   }
   for (const item of CONTEXT_MENU_ITEMS) {
-    menu.unregister(CONTEXT_MENU_DOM_IDS[item.id]);
+    doc.getElementById(CONTEXT_MENU_DOM_IDS[item.id])?.remove();
   }
+}
+
+function setContextMenuElementVisibility(
+  element: Element,
+  visible: boolean,
+): void {
+  if (visible) {
+    element.removeAttribute("hidden");
+  } else {
+    element.setAttribute("hidden", "true");
+  }
+}
+
+function bindContextMenuVisibilityUpdater(popup: Element): void {
+  const flagKey = "__aiButlerContextMenuVisibilityBound";
+  if ((popup as any)[flagKey]) return;
+  (popup as any)[flagKey] = true;
+
+  const updateVisibility = (event: Event) => {
+    const root = event.currentTarget as Element;
+    const candidates = Array.from(
+      root.querySelectorAll("[data-ai-butler-context-menu='true']"),
+    ) as Element[];
+    for (const element of candidates) {
+      const getVisibility = (element as any).__aiButlerGetVisibility as
+        | ((element: Element, event: Event) => boolean | Promise<boolean>)
+        | undefined;
+      if (!getVisibility) continue;
+      void Promise.resolve(getVisibility(element, event)).then(
+        (visible) =>
+          setContextMenuElementVisibility(element, visible !== false),
+        (error) => {
+          ztoolkit.log("[AI-Butler] 更新右键菜单可见性失败:", error);
+          setContextMenuElementVisibility(element, false);
+        },
+      );
+    }
+  };
+  popup.addEventListener("popupshowing", updateVisibility);
+  windowListenerCleanups.get(popup.ownerDocument!.defaultView!)?.push(() => {
+    popup.removeEventListener("popupshowing", updateVisibility);
+    delete (popup as any)[flagKey];
+  });
+}
+
+function createContextMenuElement(doc: Document, options: any): XULElement {
+  const tag = options.tag === "menu" ? "menu" : "menuitem";
+  const element = doc.createXULElement(tag) as XULElement;
+  element.setAttribute("id", options.id);
+  element.setAttribute("label", options.label);
+  element.setAttribute("data-ai-butler-context-menu", "true");
+
+  if (options.icon) {
+    element.setAttribute("image", options.icon);
+    element.setAttribute(
+      "class",
+      tag === "menu" ? "menu-iconic" : "menuitem-iconic",
+    );
+  }
+
+  if (typeof options.commandListener === "function") {
+    element.addEventListener("command", options.commandListener);
+  }
+
+  if (typeof options.getVisibility === "function") {
+    (element as any).__aiButlerGetVisibility = options.getVisibility;
+  }
+
+  if (tag === "menu") {
+    const popup = doc.createXULElement("menupopup") as XUL.MenuPopup;
+    bindContextMenuVisibilityUpdater(popup);
+    for (const child of options.children || []) {
+      popup.appendChild(createContextMenuElement(doc, child));
+    }
+    element.appendChild(popup);
+  }
+
+  return element;
+}
+
+function registerContextMenuElement(
+  doc: Document,
+  scope: ContextMenuScope,
+  options: any,
+): void {
+  const popup = getContextMenuPopup(doc, scope);
+  if (!popup) {
+    ztoolkit.log(`[AI-Butler] 找不到 ${scope} 右键菜单容器`);
+    return;
+  }
+  bindContextMenuVisibilityUpdater(popup);
+  popup.appendChild(createContextMenuElement(doc, options));
 }
 
 async function isContextMenuOptionVisible(
@@ -421,9 +543,20 @@ function bindUICustomizationRefreshEvent(win: Window): void {
   if ((win as any)[flagKey]) return;
   (win as any)[flagKey] = true;
 
-  win.addEventListener(UI_CUSTOMIZATION_CHANGED_EVENT, () => {
+  const refreshMenus = () => {
     refreshAIButlerContextMenuItems();
+  };
+  win.addEventListener(UI_CUSTOMIZATION_CHANGED_EVENT, refreshMenus);
+  windowListenerCleanups.get(win)?.push(() => {
+    win.removeEventListener(UI_CUSTOMIZATION_CHANGED_EVENT, refreshMenus);
+    delete (win as any)[flagKey];
   });
+}
+
+function unregisterWindowListeners(win: Window): void {
+  for (const cleanup of windowListenerCleanups.get(win) || []) cleanup();
+  windowListenerCleanups.delete(win);
+  unregisterContextMenuItems(win.document);
 }
 
 function showAIButlerToast(
@@ -1045,22 +1178,21 @@ async function maybeOpenTaskPanelAfterQueue(): Promise<void> {
  * - 视觉样式:显示插件图标和国际化文本
  *
  * 技术实现:
- * - 使用 ztoolkit.Menu API 注册菜单项
+ * - 使用 Zotero/XUL 原生菜单注册菜单项
  * - getVisibility 动态控制菜单项的显示状态
  * - commandListener 处理用户点击事件
  */
-function registerContextMenuItem() {
+function registerContextMenuItem(win?: Window) {
   // 获取插件图标路径,用于菜单项显示
   const menuIcon = `chrome://${config.addonRef}/content/icons/favicon.png`;
-  const menu = (ztoolkit as any).Menu as {
-    register: (scope: ContextMenuScope, options: any) => void;
-    unregister?: (menuId: string) => void;
-  };
-
-  unregisterContextMenuItems(menu);
+  const targetWindows = win ? [win] : Zotero.getMainWindows();
+  for (const targetWin of targetWindows) {
+    unregisterContextMenuItems(targetWin.document);
+  }
 
   const isRegularItemSelection = () => {
-    const selectedItems = Zotero.getActiveZoteroPane().getSelectedItems();
+    const selectedItems =
+      Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
     return (
       selectedItems?.every((item: Zotero.Item) => item.isRegularItem()) || false
     );
@@ -1144,7 +1276,8 @@ function registerContextMenuItem() {
         label: getString("menuitem-chatWithAI"),
         icon: menuIcon,
         commandListener: async () => {
-          const selectedItems = Zotero.getActiveZoteroPane().getSelectedItems();
+          const selectedItems =
+            Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
           const item = selectedItems?.[0];
           if (item?.isRegularItem()) {
             await handleOpenAIChat(item.id);
@@ -1152,7 +1285,8 @@ function registerContextMenuItem() {
         },
         getVisibility: () =>
           isContextMenuItemEnabled("chatWithAI") &&
-          Zotero.getActiveZoteroPane().getSelectedItems()?.length === 1 &&
+          (Zotero.getActiveZoteroPane()?.getSelectedItems() ?? []).length ===
+            1 &&
           isRegularItemSelection(),
       },
     },
@@ -1210,25 +1344,33 @@ function registerContextMenuItem() {
         .map((definition) => definition.options);
       if (!children.length) continue;
 
-      menu.register(scope, {
-        tag: "menu",
-        id: CONTEXT_MENU_ROOT_DOM_IDS[scope],
-        label: getString("menu-root-ai-butler"),
-        icon: menuIcon,
-        children,
-        getVisibility: async (_elem: XUL.Menu, ev: Event) => {
-          for (const child of children) {
-            if (await isContextMenuOptionVisible(child, ev)) return true;
-          }
-          return false;
-        },
-      });
+      for (const targetWin of targetWindows) {
+        registerContextMenuElement(targetWin.document, scope, {
+          tag: "menu",
+          id: CONTEXT_MENU_ROOT_DOM_IDS[scope],
+          label: getString("menu-root-ai-butler"),
+          icon: menuIcon,
+          children,
+          getVisibility: async (_elem: XUL.Menu, ev: Event) => {
+            for (const child of children) {
+              if (await isContextMenuOptionVisible(child, ev)) return true;
+            }
+            return false;
+          },
+        });
+      }
     }
     return;
   }
 
   for (const definition of orderedDefinitions) {
-    menu.register(definition.scope, definition.options);
+    for (const targetWin of targetWindows) {
+      registerContextMenuElement(
+        targetWin.document,
+        definition.scope,
+        definition.options,
+      );
+    }
   }
 }
 
@@ -1273,11 +1415,12 @@ function registerLibraryToolbarButton(win: Window) {
 
     // 创建按钮
     const button = doc.createXULElement("toolbarbutton") as XULElement;
-    button.setAttribute("label", "🤖");
+    const iconURI = `chrome://${config.addonRef}/content/icons/icon24.png`;
+    button.setAttribute("image", iconURI);
     button.setAttribute("tooltiptext", getString("library-toolbar-ai-butler"));
     button.setAttribute("class", "zotero-tb-button");
     (button as any).style.cssText = `
-      font-size: 16px;
+      list-style-image: url("${iconURI}");
       cursor: pointer;
     `;
 
@@ -1303,6 +1446,7 @@ function registerLibraryToolbarButton(win: Window) {
 
     buttonContainer.appendChild(button);
     toolbar.appendChild(buttonContainer);
+    windowListenerCleanups.get(win)?.push(() => buttonContainer.remove());
 
     ztoolkit.log("[AI-Butler] 文献库工具栏按钮已添加");
   } catch (error) {
@@ -1324,6 +1468,7 @@ function registerLibraryToolbarButton(win: Window) {
  * - 同时处理已打开的 Reader（插件启动时）
  */
 function registerReaderToolbarButton() {
+  if (!CHAT_ENABLED) return;
   const pluginID = config.addonID;
 
   /**
@@ -1341,8 +1486,8 @@ function registerReaderToolbarButton() {
 
     // 创建按钮 - 使用图标而非文字以适应窄工具栏
     const button = doc.createElement("button");
+    const iconURI = `chrome://${config.addonRef}/content/icons/icon24.png`;
     button.className = "toolbar-button ai-butler-reader-chat-btn";
-    button.innerHTML = `🤖`;
     button.title = getString("reader-toolbar-chat-title");
     button.style.cssText = `
       padding: 4px 8px;
@@ -1351,9 +1496,20 @@ function registerReaderToolbarButton() {
       background: transparent;
       color: inherit;
       cursor: pointer;
-      font-size: 16px;
       transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     `;
+    const icon = doc.createElement("img");
+    icon.src = iconURI;
+    icon.alt = "";
+    icon.style.cssText = `
+      width: 18px;
+      height: 18px;
+      display: block;
+    `;
+    button.appendChild(icon);
 
     // 悬停效果
     button.addEventListener("mouseenter", () => {
@@ -1366,7 +1522,9 @@ function registerReaderToolbarButton() {
     // 点击事件
     button.addEventListener("click", async () => {
       try {
-        const readerItem = reader._item;
+        const readerItem =
+          reader._item ||
+          (reader._itemID ? await Zotero.Items.getAsync(reader._itemID) : null);
         if (!readerItem) {
           new ztoolkit.ProgressWindow("AI Butler", {
             closeOnClick: true,
@@ -1427,6 +1585,10 @@ function registerReaderToolbarButton() {
 
   try {
     // 注册事件监听器，处理新打开的 Reader
+    if (isLegacyHost()) {
+      registerLegacyReaderToolbar(createToolbarButton);
+      return;
+    }
     (Zotero as any).Reader.registerEventListener(
       "renderToolbar",
       (event: any) => {
@@ -1500,6 +1662,7 @@ async function registerItemPaneSection() {
  * @param itemId 文献条目 ID
  */
 async function handleOpenAIChat(itemId: number): Promise<void> {
+  if (!CHAT_ENABLED) return;
   try {
     // 打开主窗口并切换到摘要视图
     const mainWin = MainWindow.getInstance();
@@ -1601,7 +1764,7 @@ async function handleGenerateSummary() {
   }
 
   // 第二步:获取用户选中的文献条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
 
   if (items.length === 0) {
     // 未选中任何条目,提示用户
@@ -1626,19 +1789,36 @@ async function handleGenerateSummary() {
   try {
     const manager = TaskQueueManager.getInstance();
     const priority = items.length === 1;
-    await manager.addTasks(items, priority);
+    const taskIds = await manager.addTasks(items, priority);
+    if (taskIds.length === 0) {
+      progressWin
+        .createLine({
+          text: await ContentExtractor.getUnavailableAttachmentMessage(items),
+          type: "default",
+        })
+        .show();
+      return;
+    }
     await maybeOpenTaskPanelAfterQueue();
 
-    progressWin
-      .createLine({
-        text: priority
-          ? getString("summary-queue-priority-added")
-          : getString("summary-queue-normal-added", {
-              args: { count: items.length },
-            }),
-        type: "success",
-      })
-      .show();
+    progressWin.createLine({
+      text: priority
+        ? getString("summary-queue-priority-added")
+        : getString("summary-queue-normal-added", {
+            args: { count: taskIds.length },
+          }),
+      type: "success",
+    });
+    const skippedCount = items.length - taskIds.length;
+    if (skippedCount > 0) {
+      progressWin.createLine({
+        text: getString("queue-items-without-content-skipped", {
+          args: { count: skippedCount },
+        }),
+        type: "default",
+      });
+    }
+    progressWin.show();
   } catch (error: any) {
     ztoolkit.log("[AI-Butler] 入队失败:", error);
     progressWin
@@ -1666,6 +1846,8 @@ async function handleGenerateSummary() {
  * @returns Promise<void> 清理完成的承诺
  */
 async function onMainWindowUnload(win: Window): Promise<void> {
+  unregisterWindowListeners(win);
+  unregisterLegacyWindow(win);
   // 移除文献库工具栏按钮
   try {
     const button = win.document.getElementById("ai-butler-library-toolbar-btn");
@@ -1703,7 +1885,13 @@ async function onMainWindowUnload(win: Window): Promise<void> {
  * - 需要重启 Zotero 才能重新加载插件
  */
 function onShutdown(): void {
+  for (const win of windowListenerCleanups.keys())
+    unregisterWindowListeners(win);
+  unregisterLegacyUi();
+  AutoScanManager.getInstance().stop();
   AutoNoteExportManager.getInstance().stop();
+  TaskQueueManager.getInstance().stop();
+  MainWindow.getInstance().close();
 
   // 注销文献库 AI 精读状态列和相关监听
   unregisterLibraryStatusColumn();
@@ -1797,7 +1985,7 @@ function onShortcuts(type: string) {
  */
 async function handleImageSummary() {
   // 1. 获取选中条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
@@ -1811,9 +1999,7 @@ async function handleImageSummary() {
     return;
   }
 
-  // 只处理第一个选中的条目
-  const item = items[0];
-  if (!item.isRegularItem()) {
+  if (!items.every((item) => item.isRegularItem())) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
       closeTime: 3000,
@@ -1827,10 +2013,10 @@ async function handleImageSummary() {
   }
 
   try {
-    // 添加到任务队列
-    const { TaskQueueManager } = await import("./modules/taskQueue");
+    // 单篇优先执行，多选按队列批次设置处理。
     const manager = TaskQueueManager.getInstance();
-    await manager.addImageSummaryTask(item);
+    const priority = items.length === 1;
+    const taskIds = await manager.addImageSummaryTasks(items, priority);
 
     // 显示开始提示
     new ztoolkit.ProgressWindow("AI Butler", {
@@ -1838,7 +2024,11 @@ async function handleImageSummary() {
       closeTime: 3000,
     })
       .createLine({
-        text: getString("image-summary-queue-added"),
+        text: priority
+          ? getString("image-summary-queue-added")
+          : getString("image-summary-queue-batch-added", {
+              args: { count: taskIds.length },
+            }),
         type: "success",
       })
       .show();
@@ -1865,7 +2055,7 @@ async function handleImageSummary() {
  */
 async function handleMindmapGeneration() {
   // 1. 获取选中条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
@@ -1937,7 +2127,7 @@ async function handleLiteratureReview() {
   try {
     // 获取当前选中的分类
     const zoteroPane = Zotero.getActiveZoteroPane();
-    const collection = zoteroPane.getSelectedCollection();
+    const collection = getSelectedCollection(zoteroPane);
 
     if (!collection) {
       new ztoolkit.ProgressWindow("AI Butler", {
@@ -1983,7 +2173,7 @@ async function handleLiteratureReview() {
 async function handleClearCollectionAiNotes() {
   try {
     const zoteroPane = Zotero.getActiveZoteroPane();
-    const collection = zoteroPane.getSelectedCollection();
+    const collection = getSelectedCollection(zoteroPane);
 
     if (!collection) {
       showAIButlerToast(getString("collection-error-no-collection"), "error");
@@ -2079,7 +2269,7 @@ type CollectionExportDialogChoice = {
 
 async function handleExportCollectionNotes() {
   try {
-    const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
+    const collection = getSelectedCollection();
     if (!collection) {
       showAIButlerToast(getString("collection-error-no-collection"), "error");
       return;
@@ -2524,7 +2714,7 @@ async function handleFillTable() {
     return;
   }
 
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
@@ -2593,7 +2783,7 @@ async function handleMultiRoundSummary() {
     "openai";
 
   // 2. 获取选中条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
@@ -2615,25 +2805,41 @@ async function handleMultiRoundSummary() {
 
     // 批量添加任务，遵守“已有 AI 总结 / AI 精读时的策略”。
     // 若设置为 skip 且已有完整 AI 精读，任务队列会跳过；若精读半成品，仍会补跑未完成轮次。
-    for (const item of items) {
-      await taskQueue.addDeepReadTask(item, priority, {
-        summaryMode: "deepRead",
-      });
-    }
+    const taskIds = await taskQueue.addTasks(items, priority, {
+      summaryMode: "deepRead",
+    });
 
-    new ztoolkit.ProgressWindow("AI Butler", {
+    const progressWin = new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
       closeTime: 3000,
-    })
-      .createLine({
-        text: priority
-          ? getString("deep-read-queue-priority-added")
-          : getString("deep-read-queue-normal-added", {
-              args: { count: items.length },
-            }),
-        type: "success",
-      })
-      .show();
+    });
+    if (taskIds.length === 0) {
+      progressWin
+        .createLine({
+          text: await ContentExtractor.getUnavailableAttachmentMessage(items),
+          type: "default",
+        })
+        .show();
+      return;
+    }
+    progressWin.createLine({
+      text: priority
+        ? getString("deep-read-queue-priority-added")
+        : getString("deep-read-queue-normal-added", {
+            args: { count: taskIds.length },
+          }),
+      type: "success",
+    });
+    const skippedCount = items.length - taskIds.length;
+    if (skippedCount > 0) {
+      progressWin.createLine({
+        text: getString("queue-items-without-content-skipped", {
+          args: { count: skippedCount },
+        }),
+        type: "default",
+      });
+    }
+    progressWin.show();
   } catch (error: any) {
     ztoolkit.log("[AI Butler] 加入重分析队列失败:", error);
     new ztoolkit.ProgressWindow("AI Butler", {
@@ -2669,6 +2875,7 @@ function onDialogEvents(type: string) {
  * 开发者不需要手动调用这些函数
  */
 export default {
+  onOpenSettings: () => MainWindow.getInstance().open("settings"),
   onStartup, // 插件启动
   onShutdown, // 插件关闭
   onMainWindowLoad, // 主窗口加载

@@ -1,4 +1,5 @@
 import { AutoScanManager } from "../autoScanManager";
+import { CHAT_ENABLED } from "../edition";
 import { LLMEndpointManager, type LLMEndpoint } from "../llmEndpointManager";
 import { getPref, setPref } from "../../utils/prefs";
 import { getString } from "../../utils/locale";
@@ -94,7 +95,11 @@ function getChanges(values: SetupPresetValues): SetupPresetChange[] {
       before: getPref("saveChatHistory")
         ? getString("setup-preset-value-enabled")
         : getString("setup-preset-value-disabled"),
-      after: getString("setup-preset-value-enable"),
+      after: getString(
+        CHAT_ENABLED
+          ? "setup-preset-value-enable"
+          : "setup-preset-value-disabled",
+      ),
     },
     {
       label: getString("setup-preset-change-temperature"),
@@ -147,7 +152,7 @@ function apply(values: SetupPresetValues): void {
   setPref("llmRoutingStrategy", "priority");
   setPref("pdfProcessMode", "text");
   setPref("autoScan", true);
-  setPref("saveChatHistory", true as any);
+  setPref("saveChatHistory", CHAT_ENABLED as any);
   setPref("enableTemperature", false as any);
   setPref("enableMaxTokens", false as any);
   setPref("enableTopP", false as any);

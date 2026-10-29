@@ -31,6 +31,7 @@ export interface LLMEndpoint {
   apiUrl: string;
   apiKey: string;
   model: string;
+  customHeaders?: string;
   reasoningEffort?: LLMReasoningEffortSetting;
   doubaoTuningPreset?: LLMDoubaoTuningPreset;
   temperature?: number;
@@ -256,6 +257,8 @@ function normalizeEndpoint(
     apiUrl: String(raw.apiUrl || defaults.apiUrl).trim(),
     apiKey: String(raw.apiKey || "").trim(),
     model: String(raw.model || defaults.model).trim(),
+    customHeaders:
+      typeof raw.customHeaders === "string" ? raw.customHeaders.trim() : "",
     reasoningEffort: normalizeReasoningEffortSetting(
       doubaoPresetValues?.reasoningEffort ?? raw.reasoningEffort,
       defaults.reasoningEffort || "default",
@@ -386,6 +389,7 @@ export class LLMEndpointManager {
       apiUrl: defaults.apiUrl,
       apiKey: "",
       model: defaults.model,
+      customHeaders: "",
       reasoningEffort:
         providerType === "volcanoark"
           ? doubaoValues.reasoningEffort
@@ -602,6 +606,7 @@ export class LLMEndpointManager {
       topP: previous.topP,
       maxOutputTokens: previous.maxOutputTokens,
       stream: previous.stream,
+      customHeaders: previous.customHeaders || "",
       pdfProcessMode: previous.pdfProcessMode || "global",
     };
 
@@ -718,6 +723,7 @@ export class LLMEndpointManager {
       a.apiUrl === b.apiUrl &&
       a.apiKey === b.apiKey &&
       a.model === b.model &&
+      (a.customHeaders || "") === (b.customHeaders || "") &&
       a.reasoningEffort === b.reasoningEffort &&
       a.doubaoTuningPreset === b.doubaoTuningPreset &&
       a.temperature === b.temperature &&

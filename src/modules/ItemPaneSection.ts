@@ -13,8 +13,10 @@
 import { config } from "../../package.json";
 import { getString, getLocaleID } from "../utils/locale";
 import { getPref, setPref } from "../utils/prefs";
+import { registerLegacySidebar } from "../compatibility/legacyUi";
+import { isLegacyHost } from "../compatibility/host";
+import { CHAT_ENABLED } from "./edition";
 import {
-  getSidebarModuleOrder,
   isTableFeatureEnabled,
   isSidebarModuleEnabled,
   type SidebarModuleId,
@@ -24,12 +26,18 @@ import {
   type LLMNoteMetadata,
 } from "./llmNoteMetadata";
 import {
-  appendQuickChatTurn,
   buildQuickChatConversation,
   createChatAbortController,
   isChatAbortError,
   type ChatAbortControllerLike,
 } from "./chatContext";
+import {
+  chatPersist,
+  cloneChatContext,
+  normalizeChatMessages,
+  type ChatPersistMessage,
+  type ChatPersistThread,
+} from "./chatPersist";
 import {
   buildQuickChatQuestionWithRelatedContext,
   createQuickChatRelatedContextSignature,
@@ -43,12 +51,11 @@ import {
 import { openQuickChatRelatedSelectorDialog } from "./quickChatRelatedSelector";
 import {
   addZoteroNoteOverflowGuards,
-  buildFollowUpChatPairNoteHtml,
   decodeMathHtmlEntities,
-  normalizeFollowUpChatNoteHtml,
   normalizeLatexForKatex,
   requiresDisplayMath,
   stripMathDelimiters,
+  replaceInlineMath,
 } from "./noteMarkdown";
 import { AiNoteService, type AiNoteKind } from "./aiNoteService";
 import { SummaryView } from "./views/SummaryView";
@@ -60,16 +67,14 @@ import katex from "katex";
 // 侧边栏聊天状态类型
 interface ChatState {
   itemId: number | null;
+  threadId: string | null;
   pdfContent: string;
   isBase64: boolean;
   relatedItems: QuickChatRelatedItemRef[];
   relatedMode: QuickChatRelatedMode;
   relatedContextSignature: string;
   relatedContextIncludedCount: number;
-  conversationHistory: Array<{
-    role: "system" | "user" | "assistant";
-    content: string;
-  }>;
+  conversationHistory: ChatPersistMessage[];
   isChatting: boolean;
   abortController: ChatAbortControllerLike | null;
   savedPairIds: Set<string>; // 已保存的对话对 ID，防止重复保存
@@ -84,7 +89,6 @@ function getSidebarNoteKindLabel(noteKind: AiNoteKind): string {
     : getString("itempane-note-kind-deep-read");
 }
 
-const SIDEBAR_HEADING_TO_BLOCKQUOTE_TEXT_THRESHOLD = 36;
 const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
 .ai-butler-note-section,
 .ai-butler-note-section *,
@@ -93,12 +97,19 @@ const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
   box-sizing: border-box;
 }
 .ai-butler-note-section,
+.ai-butler-note-page,
 .ai-butler-note-content-wrapper,
 .ai-butler-note-content {
+  inline-size: 100%;
+  min-inline-size: 0;
+  max-inline-size: 100%;
   min-width: 0;
   max-width: 100%;
+  contain: inline-size;
 }
-.ai-butler-note-content,
+.ai-butler-note-content {
+  overflow-x: hidden !important;
+}
 .ai-butler-note-content p,
 .ai-butler-note-content li,
 .ai-butler-note-content blockquote,
@@ -110,6 +121,8 @@ const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
 .ai-butler-note-content h6,
 .ai-butler-note-content td,
 .ai-butler-note-content th {
+  min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -121,19 +134,65 @@ const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.ai-butler-note-content pre,
-.ai-butler-note-content table,
-.ai-butler-note-content .katex-display,
-.ai-butler-note-content .katex-scroll-container {
-  max-width: 100%;
+.ai-butler-note-content pre {
   overflow-x: auto;
   overflow-y: hidden;
 }
 .ai-butler-note-content table {
-  display: block;
-  width: max-content;
+  display: table;
+  inline-size: 100%;
+  width: 100%;
+  max-inline-size: 100%;
   max-width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
+  overflow-wrap: anywhere;
+}
+.ai-butler-note-content th,
+.ai-butler-note-content td {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  vertical-align: top;
+}
+.ai-butler-note-content .katex-scroll-container,
+.ai-butler-note-content .katex-display {
+  display: block !important;
+  inline-size: 100% !important;
+  width: 100% !important;
+  min-inline-size: 0 !important;
+  min-width: 0 !important;
+  max-inline-size: 100% !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  overscroll-behavior-inline: contain;
+  contain: inline-size;
+}
+.ai-butler-note-content .katex-display {
+  margin: 0.65em 0;
+  padding-bottom: 0.15em;
+  text-align: left;
+}
+.ai-butler-note-content .katex-scroll-container > .katex-display {
+  margin: 0;
+}
+.ai-butler-note-content .katex-display > .katex,
+.ai-butler-note-content .katex-scroll-container .katex {
+  display: inline-block !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+}
+.ai-butler-note-content .katex-inline {
+  display: inline-block;
+  min-inline-size: 0;
+  min-width: 0;
+  max-inline-size: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: middle;
 }
 .ai-butler-note-content img,
 .ai-butler-note-content svg,
@@ -147,6 +206,7 @@ const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
 // 当前聊天状态
 let currentChatState: ChatState = {
   itemId: null,
+  threadId: null,
   pdfContent: "",
   isBase64: false,
   relatedItems: [],
@@ -160,11 +220,7 @@ let currentChatState: ChatState = {
 };
 
 type SidebarAutoRefreshTarget =
-  | "summary"
-  | "deepRead"
-  | "imageSummary"
-  | "mindmap"
-  | "table";
+  "summary" | "deepRead" | "imageSummary" | "mindmap" | "table";
 
 let sidebarContext: {
   doc: Document;
@@ -201,7 +257,58 @@ let sidebarNoteEditState: SidebarNoteEditState | null = null;
 const pendingSidebarRefreshTargets = new Set<SidebarAutoRefreshTarget>();
 const quickChatToggleListeners = new WeakMap<HTMLElement, EventListener>();
 const sidebarNoteEditEventCleanups = new WeakMap<HTMLElement, () => void>();
+const sidebarWorkspaceResizeObservers = new WeakMap<
+  HTMLElement,
+  ResizeObserver
+>();
+const sidebarWorkspaceMenuCleanups = new WeakMap<HTMLElement, () => void>();
 const SIDEBAR_SUMMARY_SELECTION_PREF = "sidebarSelectedSummaryBlockIds" as any;
+
+type SidebarTabId = "summary" | "chat" | "deepRead" | "mindmap" | "quickRead";
+
+type SidebarTabDefinition = {
+  id: SidebarTabId;
+  labelKey: string;
+  icon: string;
+  isAvailable: () => boolean;
+};
+
+const SIDEBAR_TAB_DEFINITIONS: SidebarTabDefinition[] = [
+  {
+    id: "chat",
+    labelKey: "itempane-tab-chat",
+    icon: "◌",
+    isAvailable: () =>
+      CHAT_ENABLED &&
+      (isSidebarModuleEnabled("actionButtons") ||
+        isSidebarModuleEnabled("quickChat")),
+  },
+  {
+    id: "deepRead",
+    labelKey: "itempane-tab-deep-read",
+    icon: "◇",
+    isAvailable: () => isSidebarModuleEnabled("deepRead"),
+  },
+  {
+    id: "summary",
+    labelKey: "itempane-tab-summary",
+    icon: "✦",
+    isAvailable: () => isSidebarModuleEnabled("note"),
+  },
+  {
+    id: "mindmap",
+    labelKey: "itempane-tab-mindmap",
+    icon: "🧠",
+    isAvailable: () => isSidebarModuleEnabled("mindmap"),
+  },
+  {
+    id: "quickRead",
+    labelKey: "itempane-tab-quick-read",
+    icon: "⌁",
+    isAvailable: () =>
+      isSidebarModuleEnabled("table") || isSidebarModuleEnabled("imageSummary"),
+  },
+];
 
 function setSidebarContext(doc: Document, item: Zotero.Item | null): void {
   sidebarContext = item
@@ -600,7 +707,10 @@ async function runSidebarRefresh(): Promise<void> {
 
   let item: Zotero.Item = sidebarContext.item;
   try {
-    item = await Zotero.Items.getAsync(itemId);
+    const refreshedItem = await Zotero.Items.getAsync(itemId);
+    if (refreshedItem) {
+      item = refreshedItem;
+    }
   } catch {
     // ignore and use cached item instance
   }
@@ -707,6 +817,13 @@ async function ensureSidebarAutoRefresh(): Promise<void> {
 export function registerItemPaneSection(
   handleOpenAIChat: (itemId: number) => Promise<void>,
 ): void {
+  if (isLegacyHost()) {
+    registerLegacySidebar(
+      (body, item) => renderItemPaneSection(body, item, handleOpenAIChat),
+      cleanupSidebarWorkspace,
+    );
+    return;
+  }
   const pluginID = config.addonID;
   const rootURI = `chrome://${config.addonRef}/content/`;
 
@@ -740,7 +857,9 @@ export function registerItemPaneSection(
  *
  * 设置页保存侧边栏显示/排序后调用，避免用户需要重新选择文献才能看到变化。
  */
-export async function refreshCurrentItemPaneSection(): Promise<void> {
+export async function refreshCurrentItemPaneSection(options?: {
+  force?: boolean;
+}): Promise<void> {
   if (!sidebarRenderContext) return;
   if (sidebarNoteEditState) {
     const doc = sidebarRenderContext.body.ownerDocument;
@@ -763,23 +882,90 @@ export async function refreshCurrentItemPaneSection(): Promise<void> {
 
   let item = sidebarRenderContext.item;
   try {
-    item = await Zotero.Items.getAsync(itemId);
+    const refreshedItem = await Zotero.Items.getAsync(itemId);
+    if (refreshedItem) {
+      item = refreshedItem;
+    }
   } catch {
     // 使用缓存的 item 继续刷新
   }
 
   if (!item) return;
-  renderItemPaneSection(body, item, handleOpenAIChat);
+  renderItemPaneSection(body, item, handleOpenAIChat, options?.force ?? true);
 }
 
 /**
  * 渲染条目面板侧边栏内容
  */
+function sidebarHasQuickChat(body: HTMLElement): boolean {
+  return !!body.querySelector("#ai-butler-inline-chat");
+}
+
+function persistActiveQuickChatThread(): void {
+  try {
+    if (currentChatState.itemId != null && currentChatState.threadId) {
+      chatPersist.saveMessages(
+        currentChatState.itemId,
+        currentChatState.threadId,
+        currentChatState.conversationHistory,
+        currentChatState,
+      );
+    }
+  } catch (err) {
+    ztoolkit.log("[AI-Butler] ChatPersist save failed:", err);
+  }
+}
+
+function resetQuickChatState(itemId: number | null): void {
+  currentChatState = {
+    itemId,
+    threadId: null,
+    pdfContent: "",
+    isBase64: false,
+    relatedItems: [],
+    relatedMode: "summary",
+    relatedContextSignature: "",
+    relatedContextIncludedCount: 0,
+    conversationHistory: [],
+    isChatting: false,
+    abortController: null,
+    savedPairIds: new Set(),
+  };
+}
+
 function renderItemPaneSection(
   body: HTMLElement,
-  item: Zotero.Item,
+  item: Zotero.Item | undefined,
   handleOpenAIChat: (itemId: number) => Promise<void>,
+  force = false,
 ): void {
+  // Host notifications must not replace an active editor, chat, or input draft.
+  // Explicit refreshes and item changes can still rebuild the section.
+  if (
+    !force &&
+    item?.isRegularItem() &&
+    sidebarRenderContext?.body === body &&
+    sidebarRenderContext.itemId === item.id &&
+    body.childNodes.length > 0 &&
+    (isSidebarNoteEditing(item.id) ||
+      (currentChatState.itemId === item.id &&
+        (currentChatState.isChatting ||
+          sidebarHasQuickChat(body) ||
+          currentChatState.conversationHistory.length > 0 ||
+          !!body.querySelector<HTMLTextAreaElement>(
+            "#ai-butler-inline-chat textarea",
+          )?.value)))
+  ) {
+    sidebarRenderContext = {
+      body,
+      item,
+      itemId: item.id,
+      handleOpenAIChat,
+    };
+    return;
+  }
+
+  cleanupSidebarWorkspace(body);
   body.innerHTML = "";
   const doc = body.ownerDocument;
 
@@ -789,29 +975,36 @@ function renderItemPaneSection(
     return;
   }
 
-  // 容器样式
+  ensureSidebarWorkspaceStyles(doc);
+
   body.style.cssText = `
-    padding: 10px;
-    font-family: system-ui, -apple-system, sans-serif;
+    margin: 0;
+    padding: 0;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 13px;
     width: 100%;
     max-width: 100%;
-    overflow-x: auto;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
     box-sizing: border-box;
   `;
 
   // 检查是否有有效的文献条目
   if (!item || !item.isRegularItem()) {
+    if (currentChatState.itemId != null) {
+      persistActiveQuickChatThread();
+      currentChatState.abortController?.abort(
+        getString("itempane-quick-chat-abort-item-switched"),
+      );
+      resetQuickChatState(null);
+    }
     setSidebarContext(doc, null);
     sidebarRenderContext = null;
     sidebarNoteEditState = null;
     const hint = doc.createElement("div");
-    hint.style.cssText = `
-      color: #9e9e9e;
-      font-size: 12px;
-      text-align: center;
-      padding: 12px;
-    `;
+    hint.className = "ai-butler-sidebar-empty";
     hint.textContent = getString("itempane-ai-no-item");
     body.appendChild(hint);
     return;
@@ -829,43 +1022,821 @@ function renderItemPaneSection(
     sidebarNoteEditState = null;
   }
 
-  // 重置聊天状态（如果切换了条目）
+  // 切换条目时先落盘上一篇的对话，再终止进行中的请求。
   if (currentChatState.itemId !== item.id) {
+    persistActiveQuickChatThread();
     currentChatState.abortController?.abort(
       getString("itempane-quick-chat-abort-item-switched"),
     );
-    currentChatState = {
-      itemId: item.id,
-      pdfContent: "",
-      isBase64: false,
-      relatedItems: [],
-      relatedMode: "summary",
-      relatedContextSignature: "",
-      relatedContextIncludedCount: 0,
-      conversationHistory: [],
-      isChatting: false,
-      abortController: null,
-      savedPairIds: new Set(),
-    };
+    resetQuickChatState(item.id);
   }
 
-  // 按用户配置的顺序渲染侧边栏功能区块
-  const renderers: Record<SidebarModuleId, () => void> = {
-    actionButtons: () => renderActionButtons(body, doc, item, handleOpenAIChat),
-    note: () => renderNoteSection(body, doc, item, "summary"),
-    deepRead: () => renderNoteSection(body, doc, item, "deepRead"),
-    table: () => renderTableSection(body, doc, item),
-    imageSummary: () => renderImageSummarySection(body, doc, item),
-    mindmap: () => renderMindmapSection(body, doc, item),
-    quickChat: () =>
-      renderChatArea(body, doc, item, !isSidebarModuleEnabled("actionButtons")),
+  const tabs = getAvailableSidebarTabs();
+  if (tabs.length === 0) {
+    const hint = doc.createElement("div");
+    hint.className = "ai-butler-sidebar-empty";
+    hint.textContent = getString("itempane-no-enabled-tabs");
+    body.appendChild(hint);
+    return;
+  }
+
+  const shell = doc.createElement("div");
+  shell.className = "ai-butler-sidebar-shell";
+
+  const header = doc.createElement("div");
+  header.className = "ai-butler-sidebar-topbar";
+
+  const titleWrap = doc.createElement("div");
+  titleWrap.className = "ai-butler-sidebar-title-wrap";
+
+  const eyebrow = doc.createElement("div");
+  eyebrow.className = "ai-butler-sidebar-eyebrow";
+  eyebrow.textContent = getString("aibutler-itempane-ai-section-header");
+
+  const itemTitle = doc.createElement("div");
+  itemTitle.className = "ai-butler-sidebar-item-title";
+  itemTitle.textContent = getSidebarItemTitle(item);
+  itemTitle.title = getSidebarItemTitle(item);
+
+  titleWrap.appendChild(eyebrow);
+  titleWrap.appendChild(itemTitle);
+
+  const refreshBtn = doc.createElement("button");
+  refreshBtn.type = "button";
+  refreshBtn.className =
+    "ai-butler-sidebar-icon-button ai-butler-sidebar-refresh";
+  refreshBtn.title = getString("itempane-refresh-tooltip");
+  refreshBtn.textContent = "↻";
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.textContent = "…";
+    refreshBtn.disabled = true;
+    try {
+      await refreshCurrentItemPaneSection({ force: true });
+    } catch (err: any) {
+      ztoolkit.log("[AI-Butler] 重新渲染侧边栏失败:", err);
+    } finally {
+      refreshBtn.textContent = "↻";
+      refreshBtn.disabled = false;
+    }
+  });
+
+  header.appendChild(titleWrap);
+  header.appendChild(refreshBtn);
+
+  const nav = doc.createElement("div");
+  nav.className = "ai-butler-sidebar-tabs";
+  nav.setAttribute("role", "tablist");
+
+  const tabButtons = new Map<SidebarTabId, HTMLButtonElement>();
+  const panels = new Map<SidebarTabId, HTMLElement>();
+  const overflowMenuItems = new Map<SidebarTabId, HTMLButtonElement>();
+
+  const moreWrap = doc.createElement("div");
+  moreWrap.className = "ai-butler-sidebar-more-wrap";
+
+  const moreBtn = doc.createElement("button");
+  moreBtn.type = "button";
+  moreBtn.className = "ai-butler-sidebar-tab ai-butler-sidebar-more";
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", "false");
+  moreBtn.textContent = "…";
+
+  const moreMenu = doc.createElement("div");
+  moreMenu.className = "ai-butler-sidebar-more-menu";
+  moreMenu.setAttribute("role", "menu");
+  moreMenu.style.display = "none";
+
+  moreWrap.appendChild(moreBtn);
+  moreWrap.appendChild(moreMenu);
+
+  const content = doc.createElement("div");
+  content.className = "ai-butler-sidebar-content";
+
+  const preferredActiveTab = String(
+    getPref("sidebarActiveTab") || "chat",
+  ) as SidebarTabId;
+  let activeTab = tabs.some((tab) => tab.id === preferredActiveTab)
+    ? preferredActiveTab
+    : tabs[0].id;
+
+  const activateTab = (tabId: SidebarTabId): void => {
+    if (!panels.has(tabId)) return;
+    activeTab = tabId;
+    setPref("sidebarActiveTab", activeTab);
+
+    for (const tab of tabs) {
+      const isActive = tab.id === activeTab;
+      const button = tabButtons.get(tab.id);
+      const menuItem = overflowMenuItems.get(tab.id);
+      const panel = panels.get(tab.id);
+
+      if (button) {
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-selected", isActive ? "true" : "false");
+      }
+      if (menuItem) {
+        menuItem.classList.toggle("is-active", isActive);
+      }
+      if (panel) {
+        panel.style.display = isActive ? "flex" : "none";
+        panel.setAttribute("aria-hidden", isActive ? "false" : "true");
+      }
+    }
+    applySidebarTabOverflow(nav, tabs, tabButtons, overflowMenuItems, moreWrap);
   };
 
-  for (const moduleId of getSidebarModuleOrder()) {
-    if (isSidebarModuleEnabled(moduleId)) {
-      renderers[moduleId]();
+  for (const tab of tabs) {
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = "ai-butler-sidebar-tab";
+    button.dataset.tabId = tab.id;
+    button.setAttribute("role", "tab");
+    button.setAttribute(
+      "aria-selected",
+      tab.id === activeTab ? "true" : "false",
+    );
+    button.title = getSidebarTabLabel(tab);
+    button.innerHTML = `<span class="ai-butler-sidebar-tab-label">${escapeHtmlForChat(getSidebarTabLabel(tab))}</span>`;
+    button.addEventListener("click", () => activateTab(tab.id));
+    tabButtons.set(tab.id, button);
+    nav.appendChild(button);
+
+    const menuItem = doc.createElement("button");
+    menuItem.type = "button";
+    menuItem.className = "ai-butler-sidebar-more-item";
+    menuItem.setAttribute("role", "menuitem");
+    menuItem.textContent = `${tab.icon} ${getSidebarTabLabel(tab)}`;
+    menuItem.addEventListener("click", () => {
+      moreMenu.style.display = "none";
+      moreBtn.setAttribute("aria-expanded", "false");
+      activateTab(tab.id);
+    });
+    overflowMenuItems.set(tab.id, menuItem);
+    moreMenu.appendChild(menuItem);
+  }
+
+  nav.appendChild(moreWrap);
+
+  moreBtn.addEventListener("click", (event: Event) => {
+    event.stopPropagation();
+    const willOpen = moreMenu.style.display === "none";
+    moreMenu.style.display = willOpen ? "block" : "none";
+    moreBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+
+  const closeMenu = (event: Event): void => {
+    if (moreWrap.contains(event.target as Node)) return;
+    moreMenu.style.display = "none";
+    moreBtn.setAttribute("aria-expanded", "false");
+  };
+  doc.addEventListener("click", closeMenu);
+
+  const relayoutSidebar = (): void => {
+    fitSidebarShellToViewport(body, shell);
+    applySidebarTabOverflow(nav, tabs, tabButtons, overflowMenuItems, moreWrap);
+  };
+  doc.defaultView?.addEventListener("resize", relayoutSidebar);
+  doc.defaultView?.top?.addEventListener("resize", relayoutSidebar);
+  sidebarWorkspaceMenuCleanups.set(body, () => {
+    doc.removeEventListener("click", closeMenu);
+    doc.defaultView?.removeEventListener("resize", relayoutSidebar);
+    doc.defaultView?.top?.removeEventListener("resize", relayoutSidebar);
+  });
+
+  for (const tab of tabs) {
+    const panel = doc.createElement("div");
+    panel.className = "ai-butler-sidebar-tab-panel";
+    panel.dataset.tabId = tab.id;
+    panel.setAttribute("role", "tabpanel");
+    panel.style.display = tab.id === activeTab ? "flex" : "none";
+    panel.setAttribute("aria-hidden", tab.id === activeTab ? "false" : "true");
+    panels.set(tab.id, panel);
+    content.appendChild(panel);
+    renderSidebarTabPanel(tab.id, panel, doc, item, handleOpenAIChat);
+  }
+
+  nav.appendChild(refreshBtn);
+  shell.appendChild(nav);
+  shell.appendChild(content);
+  body.appendChild(shell);
+  bindSidebarWheelTrap(shell);
+
+  activateTab(activeTab);
+
+  const ResizeObserverCtor = doc.defaultView?.ResizeObserver;
+  if (ResizeObserverCtor) {
+    const observer = new ResizeObserverCtor(relayoutSidebar);
+    observer.observe(nav);
+    observer.observe(body);
+    if (body.parentElement) observer.observe(body.parentElement);
+    sidebarWorkspaceResizeObservers.set(body, observer);
+  }
+
+  doc.defaultView?.setTimeout(relayoutSidebar, 0);
+}
+
+function fitSidebarShellToViewport(
+  body: HTMLElement,
+  shell: HTMLElement,
+): void {
+  const doc = body.ownerDocument;
+  if (!doc) return;
+  const view = doc.defaultView;
+  if (!view) return;
+
+  const rect = body.getBoundingClientRect();
+  const bottomInset = 8;
+  // The iframe owns the visible viewport; the host height includes Zotero's toolbars.
+  const available = Math.floor(
+    view.innerHeight - Math.max(0, rect.top) - bottomInset,
+  );
+  const targetHeight = Math.max(0, available);
+
+  body.style.height = `${targetHeight}px`;
+  body.style.minHeight = `${targetHeight}px`;
+  shell.style.height = `${targetHeight}px`;
+  shell.style.minHeight = `${targetHeight}px`;
+  shell.style.maxHeight = `${targetHeight}px`;
+}
+
+function bindSidebarWheelTrap(shell: HTMLElement): void {
+  shell.addEventListener(
+    "wheel",
+    (event: WheelEvent) => {
+      const target = event.target as HTMLElement | null;
+      const scrollTarget = findSidebarWheelTarget(shell, target, event.deltaY);
+      if (scrollTarget) {
+        // Let the browser perform native scrolling to avoid scrollbar jitter,
+        // while preventing the event from reaching Zotero's outer item pane.
+        event.stopPropagation();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    { passive: false },
+  );
+}
+
+function findSidebarWheelTarget(
+  shell: HTMLElement,
+  target: HTMLElement | null,
+  deltaY: number,
+): HTMLElement | null {
+  let node: HTMLElement | null = target;
+  while (node && node !== shell) {
+    if (canElementScrollVertically(node, deltaY)) {
+      return node;
+    }
+    node = node.parentElement as HTMLElement | null;
+  }
+
+  const activePanel = shell.querySelector(
+    '.ai-butler-sidebar-tab-panel[aria-hidden="false"]',
+  ) as HTMLElement | null;
+  const candidates = [
+    activePanel?.querySelector(".ai-butler-note-content-wrapper"),
+    activePanel?.querySelector(".ai-butler-quick-chat-messages"),
+    activePanel,
+    shell.querySelector(".ai-butler-sidebar-content"),
+  ];
+
+  for (const candidate of candidates) {
+    const element = candidate as HTMLElement | null;
+    if (element && canElementScrollVertically(element, deltaY)) {
+      return element;
     }
   }
+  return null;
+}
+
+function canElementScrollVertically(
+  element: HTMLElement,
+  deltaY: number,
+): boolean {
+  if (element.scrollHeight <= element.clientHeight + 1) return false;
+  const overflowY =
+    element.ownerDocument?.defaultView?.getComputedStyle(element)?.overflowY;
+  if (overflowY !== "auto" && overflowY !== "scroll") return false;
+  if (deltaY < 0) return element.scrollTop > 0;
+  if (deltaY > 0) {
+    return element.scrollTop + element.clientHeight < element.scrollHeight - 1;
+  }
+  return true;
+}
+
+function cleanupSidebarWorkspace(body: HTMLElement): void {
+  const previousObserver = sidebarWorkspaceResizeObservers.get(body);
+  if (previousObserver) {
+    previousObserver.disconnect();
+    sidebarWorkspaceResizeObservers.delete(body);
+  }
+
+  const previousMenuCleanup = sidebarWorkspaceMenuCleanups.get(body);
+  if (previousMenuCleanup) {
+    previousMenuCleanup();
+    sidebarWorkspaceMenuCleanups.delete(body);
+  }
+
+  const previousQuickChatToggleListener = quickChatToggleListeners.get(body);
+  if (previousQuickChatToggleListener) {
+    body.removeEventListener(
+      "ai-butler-toggle-inline-chat",
+      previousQuickChatToggleListener,
+    );
+    quickChatToggleListeners.delete(body);
+  }
+}
+
+function ensureSidebarWorkspaceStyles(doc: Document): void {
+  if (doc.getElementById("ai-butler-sidebar-workspace-styles")) return;
+
+  const style = doc.createElement("style");
+  style.id = "ai-butler-sidebar-workspace-styles";
+  style.textContent = `
+    .ai-butler-sidebar-shell,
+    .ai-butler-sidebar-shell * {
+      box-sizing: border-box;
+    }
+
+    .ai-butler-sidebar-shell {
+      --ai-butler-accent: #59c0bc;
+      --ai-butler-border: rgba(88, 166, 205, 0.16);
+      --ai-butler-soft-border: rgba(88, 166, 205, 0.1);
+      --ai-butler-muted: rgba(96, 108, 122, 0.72);
+      --ai-butler-surface: rgba(255, 255, 255, 0.78);
+      --ai-butler-surface-strong: rgba(242, 249, 253, 0.86);
+      --ai-butler-blue-bg: #f8fcff;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      border: 1px solid rgba(91, 174, 216, 0.16);
+      border-bottom-color: rgba(128, 128, 128, 0.12);
+      border-radius: 14px 14px 0 0;
+      background:
+        linear-gradient(180deg, rgba(240, 249, 255, 0.82), rgba(250, 253, 255, 0.78) 82px, rgba(255, 255, 255, 0.62)),
+        var(--ai-butler-blue-bg);
+      color: inherit;
+    }
+
+    .ai-butler-sidebar-topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      padding: 10px 10px 8px;
+      border-bottom: 1px solid var(--ai-butler-soft-border);
+      flex: 0 0 auto;
+    }
+
+    .ai-butler-sidebar-title-wrap {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    .ai-butler-sidebar-eyebrow {
+      font-size: 12px;
+      font-weight: 750;
+      line-height: 1.2;
+      letter-spacing: 0.01em;
+    }
+
+    .ai-butler-sidebar-item-title {
+      margin-top: 2px;
+      color: var(--ai-butler-muted);
+      font-size: 11px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ai-butler-sidebar-icon-button {
+      width: 28px;
+      height: 28px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--ai-butler-border);
+      border-radius: 9px;
+      background: rgba(128, 128, 128, 0.045);
+      color: inherit;
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+    }
+
+    .ai-butler-sidebar-icon-button:hover {
+      background: rgba(89, 192, 188, 0.12);
+      border-color: rgba(89, 192, 188, 0.42);
+    }
+
+    .ai-butler-sidebar-icon-button:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+
+    .ai-butler-sidebar-refresh {
+      margin-left: auto;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .ai-butler-sidebar-tabs {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      width: 100%;
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(91, 174, 216, 0.12);
+      border-radius: 14px 14px 0 0;
+      background: rgba(247, 252, 255, 0.82);
+      overflow: visible;
+      flex: 0 0 auto;
+    }
+
+    .ai-butler-sidebar-tab {
+      min-width: max-content;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 30px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+      transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+    }
+
+    .ai-butler-sidebar-tab:hover,
+    .ai-butler-sidebar-tab.is-active {
+      background: rgba(89, 192, 188, 0.13);
+      border-color: rgba(89, 192, 188, 0.38);
+    }
+
+    .ai-butler-sidebar-tab.is-active {
+      color: var(--ai-butler-accent);
+      box-shadow: inset 0 0 0 1px rgba(89, 192, 188, 0.1);
+    }
+
+    .ai-butler-sidebar-tab-icon {
+      flex: 0 0 auto;
+      font-size: 11px;
+      opacity: 0.9;
+    }
+
+    .ai-butler-sidebar-tab-label {
+      min-width: max-content;
+      overflow: visible;
+      text-overflow: clip;
+    }
+
+    .ai-butler-sidebar-more-wrap {
+      position: relative;
+      display: none;
+      flex: 0 0 auto;
+      margin-left: 0;
+    }
+
+    .ai-butler-sidebar-more-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 20;
+      min-width: 116px;
+      padding: 5px;
+      border: 1px solid var(--ai-butler-border);
+      border-radius: 10px;
+      background: rgba(250, 250, 250, 0.98);
+      color: #1f2933;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+    }
+
+    .ai-butler-sidebar-more-item {
+      width: 100%;
+      display: none;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .ai-butler-sidebar-more-item:hover,
+    .ai-butler-sidebar-more-item.is-active {
+      background: rgba(89, 192, 188, 0.13);
+    }
+
+    .ai-butler-sidebar-content {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      max-width: 100%;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      padding: 0;
+      scrollbar-width: thin;
+    }
+
+    .ai-butler-sidebar-tab-panel {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      flex-direction: column;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      padding: 10px;
+    }
+
+    .ai-butler-sidebar-tab-panel > :first-child {
+      margin-top: 0 !important;
+    }
+
+    .ai-butler-sidebar-tab-panel > :last-child {
+      margin-bottom: 0 !important;
+    }
+
+    .ai-butler-sidebar-tab-panel[data-tab-id="chat"],
+    .ai-butler-sidebar-tab-panel[data-tab-id="mindmap"] {
+      overflow: hidden;
+      overscroll-behavior: contain;
+    }
+
+    .ai-butler-sidebar-tab-panel[data-tab-id="quickRead"] {
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+    }
+
+    .ai-butler-sidebar-tab-panel[data-tab-id="quickRead"] > * {
+      flex-shrink: 0;
+    }
+
+    .ai-butler-sidebar-tab-panel[data-tab-id="summary"],
+    .ai-butler-sidebar-tab-panel[data-tab-id="deepRead"] {
+      padding: 0;
+    }
+
+    .ai-butler-sidebar-chat-entry {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--ai-butler-border);
+      border-radius: 10px;
+      background: var(--ai-butler-surface);
+    }
+
+    .ai-butler-sidebar-chat-entry-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--ai-butler-muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .ai-butler-sidebar-empty {
+      min-height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      color: rgba(128, 128, 128, 0.85);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 260px) {
+      .ai-butler-sidebar-tab {
+        padding: 0 10px;
+      }
+      .ai-butler-sidebar-item-title {
+        display: none;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .ai-butler-sidebar-shell {
+        --ai-butler-accent: #71d7d2;
+        --ai-butler-border: rgba(112, 184, 214, 0.2);
+        --ai-butler-soft-border: rgba(112, 184, 214, 0.14);
+        --ai-butler-muted: rgba(203, 213, 225, 0.64);
+        --ai-butler-surface: rgba(15, 23, 42, 0.42);
+        --ai-butler-surface-strong: rgba(20, 34, 48, 0.62);
+        --ai-butler-blue-bg: #111820;
+        border-color: rgba(112, 184, 214, 0.18);
+        border-bottom-color: rgba(148, 163, 184, 0.12);
+        background:
+          linear-gradient(180deg, rgba(17, 33, 45, 0.72), rgba(15, 23, 42, 0.58) 86px, rgba(15, 23, 42, 0.38)),
+          var(--ai-butler-blue-bg);
+      }
+
+      .ai-butler-sidebar-tabs {
+        border-bottom-color: rgba(112, 184, 214, 0.14);
+        background: rgba(17, 31, 42, 0.78);
+      }
+
+      .ai-butler-sidebar-icon-button,
+      .ai-butler-sidebar-refresh {
+        background: rgba(15, 23, 42, 0.55);
+        border-color: rgba(148, 163, 184, 0.22);
+      }
+
+      .ai-butler-sidebar-more-menu {
+        background: rgba(24, 31, 39, 0.98);
+        color: #f3f4f6;
+      }
+    }
+  `;
+  const styleHost = doc.head || doc.documentElement;
+  if (styleHost) styleHost.appendChild(style);
+}
+
+function getAvailableSidebarTabs(): SidebarTabDefinition[] {
+  return SIDEBAR_TAB_DEFINITIONS.filter((tab) => tab.isAvailable());
+}
+
+function getSidebarTabLabel(tab: SidebarTabDefinition): string {
+  return getString(tab.labelKey);
+}
+
+function getSidebarItemTitle(item: Zotero.Item): string {
+  const title = String((item as any).getField?.("title") || "").trim();
+  return title || getString("summary-untitled-paper");
+}
+
+function applySidebarTabOverflow(
+  nav: HTMLElement,
+  tabs: SidebarTabDefinition[],
+  tabButtons: Map<SidebarTabId, HTMLButtonElement>,
+  overflowMenuItems: Map<SidebarTabId, HTMLButtonElement>,
+  moreWrap: HTMLElement,
+): void {
+  const visibleTabs = new Set<SidebarTabId>(tabs.map((tab) => tab.id));
+  const activeTab = tabs.find((tab) =>
+    tabButtons.get(tab.id)?.classList.contains("is-active"),
+  )?.id;
+
+  for (const tab of tabs) {
+    const button = tabButtons.get(tab.id);
+    const menuItem = overflowMenuItems.get(tab.id);
+    if (button) button.style.display = "inline-flex";
+    if (menuItem) menuItem.style.display = "none";
+  }
+  moreWrap.style.display = "none";
+
+  const fits = (): boolean => nav.scrollWidth <= nav.clientWidth + 1;
+  if (fits()) return;
+
+  moreWrap.style.display = "block";
+  const hidePriority: SidebarTabId[] = [
+    "quickRead",
+    "summary",
+    "deepRead",
+    "mindmap",
+    "chat",
+  ];
+  const orderedTabs = hidePriority
+    .map((id) => tabs.find((tab) => tab.id === id))
+    .filter((tab): tab is SidebarTabDefinition => !!tab);
+
+  for (const tab of orderedTabs) {
+    if (fits()) break;
+    if (tab.id === activeTab && visibleTabs.size > 1) continue;
+    const button = tabButtons.get(tab.id);
+    const menuItem = overflowMenuItems.get(tab.id);
+    if (!button || !menuItem) continue;
+    button.style.display = "none";
+    menuItem.style.display = "flex";
+    visibleTabs.delete(tab.id);
+  }
+
+  if (!fits() && activeTab) {
+    for (const tab of orderedTabs) {
+      if (tab.id === activeTab) continue;
+      const button = tabButtons.get(tab.id);
+      const menuItem = overflowMenuItems.get(tab.id);
+      if (!button || button.style.display === "none") continue;
+      button.style.display = "none";
+      menuItem?.style.setProperty("display", "flex");
+      visibleTabs.delete(tab.id);
+      if (fits()) break;
+    }
+  }
+
+  const hasHiddenTabs = visibleTabs.size < tabs.length;
+  moreWrap.style.display = hasHiddenTabs ? "block" : "none";
+}
+
+function renderSidebarTabPanel(
+  tabId: SidebarTabId,
+  panel: HTMLElement,
+  doc: Document,
+  item: Zotero.Item,
+  handleOpenAIChat: (itemId: number) => Promise<void>,
+): void {
+  switch (tabId) {
+    case "summary":
+      renderNoteSection(panel, doc, item, "summary", { mode: "page" });
+      break;
+    case "chat":
+      if (!CHAT_ENABLED) break;
+      if (isSidebarModuleEnabled("actionButtons")) {
+        renderFullChatEntry(panel, doc, item, handleOpenAIChat);
+      }
+      if (isSidebarModuleEnabled("quickChat")) {
+        renderChatArea(panel, doc, item, true, { mode: "page" });
+      }
+      break;
+    case "deepRead":
+      renderNoteSection(panel, doc, item, "deepRead", { mode: "page" });
+      break;
+    case "mindmap":
+      renderMindmapSection(panel, doc, item, { mode: "page" });
+      break;
+    case "quickRead":
+      if (isSidebarModuleEnabled("table")) {
+        renderTableSection(panel, doc, item);
+      }
+      if (isSidebarModuleEnabled("imageSummary")) {
+        renderImageSummarySection(panel, doc, item);
+      }
+      if (!panel.childElementCount) {
+        const hint = doc.createElement("div");
+        hint.className = "ai-butler-sidebar-empty";
+        hint.textContent = getString("itempane-no-enabled-tabs");
+        panel.appendChild(hint);
+      }
+      break;
+  }
+}
+
+function renderFullChatEntry(
+  body: HTMLElement,
+  doc: Document,
+  item: Zotero.Item,
+  handleOpenAIChat: (itemId: number) => Promise<void>,
+): void {
+  const entry = doc.createElement("div");
+  entry.className = "ai-butler-sidebar-chat-entry";
+
+  const meta = doc.createElement("div");
+  meta.className = "ai-butler-sidebar-chat-entry-title";
+  const metaText = doc.createElement("span");
+  metaText.textContent = getString("itempane-ai-open-chat-tooltip");
+  meta.appendChild(metaText);
+
+  const fullChatBtn = createButton(
+    doc,
+    getString("itempane-ai-open-chat"),
+    true,
+  );
+  fullChatBtn.style.flex = "0 0 auto";
+  fullChatBtn.addEventListener("click", async () => {
+    try {
+      await handleOpenAIChat(item.id);
+    } catch (error: any) {
+      ztoolkit.log("[AI-Butler] 完整追问按钮点击失败:", error);
+    }
+  });
+
+  entry.appendChild(meta);
+  entry.appendChild(fullChatBtn);
+  body.appendChild(entry);
 }
 
 /**
@@ -1050,7 +2021,7 @@ function renderActionButtons(
     refreshBtn.textContent = "⏳";
     refreshBtn.style.pointerEvents = "none";
     try {
-      await refreshCurrentItemPaneSection();
+      await refreshCurrentItemPaneSection({ force: true });
     } catch (err: any) {
       ztoolkit.log("[AI-Butler] 重新渲染侧边栏失败:", err);
     } finally {
@@ -1059,13 +2030,17 @@ function renderActionButtons(
     }
   });
 
-  btnContainer.appendChild(fullChatBtn);
+  if (CHAT_ENABLED) btnContainer.appendChild(fullChatBtn);
   if (isSidebarModuleEnabled("quickChat")) {
     btnContainer.appendChild(quickChatBtn);
   }
   btnContainer.appendChild(refreshBtn);
   body.appendChild(btnContainer);
 }
+
+type SidebarNoteRenderOptions = {
+  mode?: "card" | "page";
+};
 
 /**
  * 渲染 AI 笔记区域
@@ -1075,10 +2050,25 @@ function renderNoteSection(
   doc: Document,
   item: Zotero.Item,
   noteKind: AiNoteKind = "summary",
+  options: SidebarNoteRenderOptions = {},
 ): void {
+  const isPageMode = options.mode === "page";
   const noteSection = doc.createElement("div");
-  noteSection.className = "ai-butler-note-section";
-  noteSection.style.cssText = `
+  noteSection.className = isPageMode
+    ? "ai-butler-note-section ai-butler-note-page"
+    : "ai-butler-note-section";
+  noteSection.style.cssText = isPageMode
+    ? `
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  `
+    : `
     margin-bottom: 12px;
     border: 1px solid #e0e0e0;
     border-radius: 6px;
@@ -1091,7 +2081,24 @@ function renderNoteSection(
   // 笔记标题栏（可折叠）- 使用继承颜色以支持暗色模式
   const noteHeader = doc.createElement("div");
   noteHeader.className = "ai-butler-note-header";
-  noteHeader.style.cssText = `
+  noteHeader.style.cssText = isPageMode
+    ? `
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px 10px;
+    background: rgba(128, 128, 128, 0.035);
+    cursor: default;
+    user-select: none;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    overflow: visible;
+  `
+    : `
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -1120,7 +2127,9 @@ function renderNoteSection(
     overflow-wrap: anywhere;
   `;
   const noteLabel = getSidebarNoteKindLabel(noteKind);
-  noteTitle.innerHTML = `📄 <span>${noteLabel}</span>`;
+  noteTitle.innerHTML = isPageMode
+    ? `<span>${noteLabel}</span>`
+    : `📄 <span>${noteLabel}</span>`;
 
   const headerTopRow = doc.createElement("div");
   headerTopRow.style.cssText = `
@@ -1184,15 +2193,19 @@ function renderNoteSection(
   );
   metadataMenu.style.cssText = `
     display: none;
-    margin: 6px 8px 0;
-    max-height: 240px;
+    margin: 6px 8px 8px;
+    min-height: 52px;
+    max-height: min(280px, 42vh);
     overflow-y: auto;
-    padding: 6px;
-    border: 1px solid rgba(128, 128, 128, 0.22);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.92);
+    overflow-x: hidden;
+    padding: 8px;
+    border: 1px solid rgba(89, 192, 188, 0.22);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.96);
     color: inherit;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.1);
+    flex: 0 0 auto;
+    z-index: 4;
   `;
 
   metadataButton.addEventListener("click", (e: Event) => {
@@ -1272,7 +2285,19 @@ function renderNoteSection(
   // 笔记内容区域
   const noteContentWrapper = doc.createElement("div");
   noteContentWrapper.className = "ai-butler-note-content-wrapper";
-  noteContentWrapper.style.cssText = `
+  noteContentWrapper.style.cssText = isPageMode
+    ? `
+    position: relative;
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  `
+    : `
     position: relative;
     height: ${savedNoteHeight}px;
     min-height: 50px;
@@ -1289,8 +2314,8 @@ function renderNoteSection(
   noteContent.id = getSidebarNoteElementId("ai-butler-note-content", noteKind);
   noteContent.dataset.aiNoteKind = noteKind;
   noteContent.style.cssText = `
-    padding: 10px;
-    padding-bottom: 20px;
+    padding: ${isPageMode ? "14px 12px 28px" : "10px"};
+    padding-bottom: ${isPageMode ? "28px" : "20px"};
     font-size: ${currentFontSize}px;
     line-height: 1.6;
     overflow-wrap: anywhere;
@@ -1645,7 +2670,9 @@ function renderNoteSection(
 
   headerTopRow.appendChild(noteTitle);
   headerTopRow.appendChild(mainControls);
-  headerTopRow.appendChild(toggleIcon);
+  if (!isPageMode) {
+    headerTopRow.appendChild(toggleIcon);
+  }
   noteHeader.appendChild(headerTopRow);
   noteHeader.appendChild(personalizationRow);
 
@@ -1658,52 +2685,58 @@ function renderNoteSection(
     noteHeightPrefKey,
   );
 
-  // 折叠/展开功能 - 从首选项读取初始状态
-  let isCollapsed = getPref(noteCollapsedPrefKey as any) === true;
-
-  // 根据初始状态设置UI
-  if (isCollapsed) {
-    noteContentWrapper.style.height = "0px";
-    noteContentWrapper.style.overflow = "hidden";
+  if (isPageMode) {
     resizeHandle.style.display = "none";
-    toggleIcon.style.transform = "rotate(-90deg)";
-  }
+  } else {
+    // 折叠/展开功能 - 从首选项读取初始状态
+    let isCollapsed = getPref(noteCollapsedPrefKey as any) === true;
 
-  noteHeader.addEventListener("click", () => {
-    if (isSidebarNoteEditing(item.id)) {
-      setSidebarNoteEditStatus(
-        doc,
-        getString("itempane-note-editing-save-or-cancel"),
-        undefined,
-        noteKind,
-      );
-      return;
-    }
-    isCollapsed = !isCollapsed;
-    // 保存折叠状态到首选项
-    setPref(noteCollapsedPrefKey as any, isCollapsed as any);
+    // 根据初始状态设置UI
     if (isCollapsed) {
       noteContentWrapper.style.height = "0px";
       noteContentWrapper.style.overflow = "hidden";
       resizeHandle.style.display = "none";
       toggleIcon.style.transform = "rotate(-90deg)";
-    } else {
-      const restoreHeight = parseInt(
-        (getPref(noteHeightPrefKey as any) as string) ||
-          String(DEFAULT_NOTE_HEIGHT),
-        10,
-      );
-      noteContentWrapper.style.height = `${restoreHeight}px`;
-      noteContentWrapper.style.overflowY = "auto";
-      resizeHandle.style.display = "flex";
-      toggleIcon.style.transform = "rotate(0deg)";
     }
-  });
+
+    noteHeader.addEventListener("click", () => {
+      if (isSidebarNoteEditing(item.id)) {
+        setSidebarNoteEditStatus(
+          doc,
+          getString("itempane-note-editing-save-or-cancel"),
+          undefined,
+          noteKind,
+        );
+        return;
+      }
+      isCollapsed = !isCollapsed;
+      // 保存折叠状态到首选项
+      setPref(noteCollapsedPrefKey as any, isCollapsed as any);
+      if (isCollapsed) {
+        noteContentWrapper.style.height = "0px";
+        noteContentWrapper.style.overflow = "hidden";
+        resizeHandle.style.display = "none";
+        toggleIcon.style.transform = "rotate(-90deg)";
+      } else {
+        const restoreHeight = parseInt(
+          (getPref(noteHeightPrefKey as any) as string) ||
+            String(DEFAULT_NOTE_HEIGHT),
+          10,
+        );
+        noteContentWrapper.style.height = `${restoreHeight}px`;
+        noteContentWrapper.style.overflowY = "auto";
+        resizeHandle.style.display = "flex";
+        toggleIcon.style.transform = "rotate(0deg)";
+      }
+    });
+  }
 
   noteSection.appendChild(noteHeader);
   noteSection.appendChild(metadataMenu);
   noteSection.appendChild(noteContentWrapper);
-  noteSection.appendChild(resizeHandle);
+  if (!isPageMode) {
+    noteSection.appendChild(resizeHandle);
+  }
   body.appendChild(noteSection);
 
   updateSidebarNoteEditControls(doc, "missing", "", undefined, noteKind);
@@ -1768,7 +2801,7 @@ function renderTableSection(
   doc: Document,
   item: Zotero.Item,
 ): void {
-  if (!isTableFeatureEnabled()) return;
+  const canGenerateTable = isTableFeatureEnabled();
 
   const tableSection = doc.createElement("div");
   tableSection.className = "ai-butler-table-section";
@@ -1859,30 +2892,38 @@ function renderTableSection(
   // 重新填表按钮
   const refillBtn = doc.createElement("button");
   refillBtn.textContent = getString("itempane-regenerate");
-  refillBtn.title = getString("itempane-regenerate-table");
+  refillBtn.disabled = !canGenerateTable;
+  refillBtn.title = getString(
+    canGenerateTable
+      ? "itempane-regenerate-table"
+      : "itempane-table-generation-disabled",
+  );
   refillBtn.style.cssText = `
     padding: 2px 8px;
     border: 1px solid currentColor;
     border-radius: 3px;
     background: transparent;
-    cursor: pointer;
+    cursor: ${canGenerateTable ? "pointer" : "not-allowed"};
     font-size: 11px;
     color: inherit;
     display: flex;
     align-items: center;
     justify-content: center;
-    opacity: 0.7;
+    opacity: ${canGenerateTable ? "0.7" : "0.4"};
     white-space: nowrap;
   `;
   refillBtn.addEventListener("mouseenter", () => {
+    if (refillBtn.disabled) return;
     refillBtn.style.opacity = "1";
     refillBtn.style.background = "rgba(128, 128, 128, 0.2)";
   });
   refillBtn.addEventListener("mouseleave", () => {
+    if (refillBtn.disabled) return;
     refillBtn.style.opacity = "0.7";
     refillBtn.style.background = "transparent";
   });
   refillBtn.addEventListener("click", async () => {
+    if (!isTableFeatureEnabled()) return;
     refillBtn.textContent = getString("itempane-generating");
     refillBtn.style.pointerEvents = "none";
     try {
@@ -2034,6 +3075,12 @@ function renderTableSection(
   });
 
   tableSection.appendChild(tableHeader);
+  if (!canGenerateTable) {
+    const hint = doc.createElement("div");
+    hint.textContent = getString("itempane-table-generation-disabled");
+    hint.style.cssText = "padding: 8px 10px; font-size: 12px; opacity: 0.7;";
+    tableSection.appendChild(hint);
+  }
   tableSection.appendChild(tableContentWrapper);
   tableSection.appendChild(tableResizeHandle);
   body.appendChild(tableSection);
@@ -2167,10 +3214,27 @@ function renderMindmapSection(
   body: HTMLElement,
   doc: Document,
   item: Zotero.Item,
+  options: { mode?: "card" | "page" } = {},
 ): void {
+  const isPageMode = options.mode === "page";
   const mindmapSection = doc.createElement("div");
   mindmapSection.className = "ai-butler-mindmap-section";
-  mindmapSection.style.cssText = `
+  mindmapSection.style.cssText = isPageMode
+    ? `
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    overflow: hidden;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  `
+    : `
     margin-bottom: 12px;
     margin-top: 12px;
     border: 1px solid #e0e0e0;
@@ -2220,7 +3284,24 @@ function renderMindmapSection(
   // 思维导图容器
   const mindmapContainer = doc.createElement("div");
   mindmapContainer.id = "ai-butler-mindmap-container";
-  mindmapContainer.style.cssText = `
+  mindmapContainer.style.cssText = isPageMode
+    ? `
+    padding: 10px;
+    text-align: center;
+    background: transparent;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+  `
+    : `
     padding: 10px;
     text-align: center;
     background: transparent;
@@ -2262,7 +3343,7 @@ function renderMindmapSection(
   body.appendChild(mindmapSection);
 
   // 异步加载思维导图
-  loadMindmapContent(doc, item, mindmapContainer);
+  void loadMindmapContent(doc, item, mindmapContainer, options);
 }
 
 /**
@@ -2272,7 +3353,9 @@ async function loadMindmapContent(
   doc: Document,
   item: Zotero.Item,
   container: HTMLElement,
+  options: { mode?: "card" | "page" } = {},
 ): Promise<void> {
+  const isPageMode = options.mode === "page";
   try {
     // Avoid accumulating message listeners across re-renders/refreshes
     const mindmapWin: any = doc.defaultView;
@@ -2457,7 +3540,18 @@ async function loadMindmapContent(
       // 创建 iframe 容器
       const iframeWrapper = doc.createElement("div");
       iframeWrapper.id = "ai-butler-mindmap-wrapper";
-      iframeWrapper.style.cssText = `
+      iframeWrapper.style.cssText = isPageMode
+        ? `
+        width: 100%;
+        height: 100%;
+        flex: 1 1 auto;
+        min-height: 0;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #fafafa;
+      `
+        : `
         width: 100%;
         height: ${savedMindmapHeight}px;
         min-height: 100px;
@@ -2659,13 +3753,15 @@ async function loadMindmapContent(
       iframeWrapper.appendChild(iframe);
       container.appendChild(iframeWrapper);
 
-      // 创建高度调整手柄
-      const resizeHandle = createResizeHandle(
-        doc,
-        iframeWrapper,
-        "sidebarMindmapHeight",
-      );
-      container.appendChild(resizeHandle);
+      // Page mode fills the tab. The card keeps a draggable height.
+      if (!isPageMode) {
+        const resizeHandle = createResizeHandle(
+          doc,
+          iframeWrapper,
+          "sidebarMindmapHeight",
+        );
+        container.appendChild(resizeHandle);
+      }
 
       ztoolkit.log("[AI-Butler] 思维导图 iframe 创建成功");
     } catch (renderError: any) {
@@ -2892,23 +3988,110 @@ async function ensureQuickChatKatexCss(doc: Document): Promise<void> {
   }
 }
 
+function createQuickChatPairActions(
+  doc: Document,
+  item: Zotero.Item,
+  pairId: string,
+  question: string,
+  answer: ChatPersistMessage,
+  onSaved: () => void,
+): HTMLElement {
+  const actions = doc.createElement("div");
+  actions.className = "ai-butler-quick-chat-actions";
+  actions.style.cssText =
+    "display: flex; justify-content: flex-end; margin-top: 4px; gap: 6px;";
+  const copyBtn = doc.createElement("button");
+  copyBtn.textContent = getString("itempane-copy-answer");
+  copyBtn.style.cssText =
+    "padding: 4px 10px; background: #59c0bc; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;";
+  copyBtn.addEventListener("click", async () => {
+    const copied = await copyQuickChatText(doc, answer.content);
+    copyBtn.textContent = getString(
+      copied ? "itempane-copied" : "itempane-copy-failed",
+    );
+    copyBtn.style.background = copied ? "#4caf50" : "#f44336";
+    setTimeout(() => {
+      copyBtn.textContent = getString("itempane-copy-answer");
+      copyBtn.style.background = "#59c0bc";
+    }, 1500);
+  });
+
+  const saveBtn = doc.createElement("button");
+  saveBtn.textContent = getString(
+    answer.savedToNote ? "itempane-saved" : "itempane-save-note",
+  );
+  saveBtn.disabled = answer.savedToNote === true;
+  saveBtn.style.cssText =
+    "padding: 4px 10px; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;";
+  saveBtn.style.background = answer.savedToNote ? "#4caf50" : "#667eea";
+  saveBtn.addEventListener("click", async () => {
+    if (saveBtn.disabled || answer.savedToNote) return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = getString("itempane-saving");
+    saveBtn.style.background = "#9e9e9e";
+    try {
+      await saveChatPairToNote(
+        item,
+        pairId,
+        question,
+        answer.content,
+        answer.noteMetadata,
+        answer.sourceLabel,
+      );
+      answer.savedToNote = true;
+      onSaved();
+      saveBtn.textContent = getString("itempane-saved");
+      saveBtn.style.background = "#4caf50";
+    } catch (error) {
+      ztoolkit.log("[AI-Butler] 保存快速追问对话失败:", error);
+      saveBtn.textContent = getString("itempane-save-failed");
+      saveBtn.style.background = "#f44336";
+      saveBtn.disabled = false;
+    }
+  });
+  actions.appendChild(copyBtn);
+  actions.appendChild(saveBtn);
+  return actions;
+}
+
 function renderChatArea(
   body: HTMLElement,
   doc: Document,
   item: Zotero.Item,
   initiallyVisible = false,
+  options: { mode?: "card" | "page" } = {},
 ): void {
-  currentChatState.abortController?.abort(
-    getString("itempane-quick-chat-abort-refreshed"),
-  );
-  currentChatState.conversationHistory = [];
-  currentChatState.relatedItems = [];
-  currentChatState.relatedMode = "summary";
-  currentChatState.relatedContextSignature = "";
-  currentChatState.relatedContextIncludedCount = 0;
-  currentChatState.isChatting = false;
-  currentChatState.abortController = null;
-  currentChatState.savedPairIds = new Set();
+  if (!CHAT_ENABLED) return;
+  const isPageMode = options.mode === "page";
+  const existingChat = body.querySelector("#ai-butler-inline-chat");
+  if (
+    currentChatState.isChatting &&
+    currentChatState.itemId === item.id &&
+    existingChat
+  ) {
+    return;
+  }
+  // Rebuilding the DOM while a reply is in flight is a real abort. A plain
+  // re-render keeps the saved thread instead of clearing it.
+  if (currentChatState.isChatting) {
+    currentChatState.abortController?.abort(
+      getString("itempane-quick-chat-abort-refreshed"),
+    );
+    currentChatState.isChatting = false;
+    currentChatState.abortController = null;
+  }
+  if (currentChatState.itemId !== item.id) {
+    currentChatState.itemId = item.id;
+    currentChatState.threadId = null;
+    currentChatState.conversationHistory = [];
+    currentChatState.pdfContent = "";
+    currentChatState.isBase64 = false;
+    currentChatState.relatedItems = [];
+    currentChatState.relatedMode = "summary";
+    currentChatState.relatedContextSignature = "";
+    currentChatState.relatedContextIncludedCount = 0;
+    currentChatState.savedPairIds = new Set();
+  }
   void ensureQuickChatKatexCss(doc);
 
   const chatArea = doc.createElement("div");
@@ -2922,12 +4105,13 @@ function renderChatArea(
     max-inline-size: 100%;
     min-width: 0;
     min-inline-size: 0;
+    ${isPageMode ? "min-height: 0; flex: 1 1 auto;" : ""}
     contain: inline-size;
-    border: 1px solid rgba(128, 128, 128, 0.3);
-    border-radius: 6px;
+    border: 1px solid rgba(89, 192, 188, 0.22);
+    border-radius: 10px;
     overflow: hidden;
-    background: transparent;
-    margin-bottom: 12px;
+    background: rgba(255, 255, 255, 0.72);
+    margin-bottom: ${isPageMode ? "0" : "12px"};
   `;
 
   const chatHeader = doc.createElement("div");
@@ -3022,6 +4206,34 @@ function renderChatArea(
     return button;
   };
 
+  const threadSelect = doc.createElement("select");
+  threadSelect.id = "ai-butler-chat-thread-select";
+  threadSelect.title = getString("itempane-quick-chat-thread-switch");
+  threadSelect.style.cssText = `
+    max-width: 120px;
+    height: 20px;
+    font-size: 10px;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.85;
+  `;
+  const newThreadBtn = createQuickControlButton(
+    getString("itempane-quick-chat-thread-new"),
+    getString("itempane-quick-chat-thread-new-title"),
+  );
+  newThreadBtn.style.width = "auto";
+  newThreadBtn.style.padding = "0 4px";
+  newThreadBtn.style.fontSize = "10px";
+  const deleteThreadBtn = createQuickControlButton(
+    getString("itempane-quick-chat-thread-delete"),
+    getString("itempane-quick-chat-thread-delete-title"),
+  );
+  deleteThreadBtn.id = "ai-butler-chat-thread-delete";
+  deleteThreadBtn.style.width = "auto";
+  deleteThreadBtn.style.padding = "0 4px";
+  deleteThreadBtn.style.fontSize = "10px";
   const newConversationBtn = createQuickControlButton(
     "🧹",
     getString("itempane-quick-chat-new-conversation"),
@@ -3034,6 +4246,9 @@ function renderChatArea(
     "A+",
     getString("itempane-quick-chat-increase-font"),
   );
+  chatControls.appendChild(threadSelect);
+  chatControls.appendChild(newThreadBtn);
+  chatControls.appendChild(deleteThreadBtn);
   chatControls.appendChild(newConversationBtn);
   chatControls.appendChild(decreaseFontBtn);
   chatControls.appendChild(quickFontLabel);
@@ -3042,8 +4257,10 @@ function renderChatArea(
 
   // 消息显示区
   const messagesArea = doc.createElement("div");
+  messagesArea.className = "ai-butler-quick-chat-messages";
   messagesArea.style.cssText = `
-    height: ${currentQuickChatHeight}px;
+    height: ${isPageMode ? "auto" : `${currentQuickChatHeight}px`};
+    ${isPageMode ? "flex: 1 1 auto;" : ""}
     width: 100%;
     inline-size: 100%;
     max-width: 100%;
@@ -3051,8 +4268,8 @@ function renderChatArea(
     min-width: 0;
     min-inline-size: 0;
     contain: inline-size;
-    min-height: 100px;
-    max-height: 520px;
+    min-height: ${isPageMode ? "0" : "100px"};
+    max-height: ${isPageMode ? "none" : "520px"};
     overflow-y: auto;
     overflow-x: hidden;
     padding: 8px;
@@ -3061,6 +4278,261 @@ function renderChatArea(
     user-select: text;
     cursor: text;
   `;
+
+  let quickChatBindGeneration = 0;
+
+  const syncQuickChatThreadControls = (): void => {
+    const busy = currentChatState.isChatting;
+    deleteThreadBtn.disabled = busy;
+    newThreadBtn.disabled = busy;
+    threadSelect.disabled = busy;
+    deleteThreadBtn.style.opacity = busy ? "0.45" : "0.75";
+    newThreadBtn.style.opacity = busy ? "0.45" : "0.75";
+  };
+
+  const appendPairActions = (
+    pairWrapper: HTMLElement,
+    pairId: string,
+    question: string,
+    answer: ChatPersistMessage,
+  ): void => {
+    const threadId = currentChatState.threadId;
+    pairWrapper.appendChild(
+      createQuickChatPairActions(doc, item, pairId, question, answer, () => {
+        if (threadId) chatPersist.markPairSaved(item.id, threadId, pairId);
+        if (
+          currentChatState.itemId === item.id &&
+          currentChatState.threadId === threadId
+        ) {
+          currentChatState.savedPairIds.add(pairId);
+          const message = currentChatState.conversationHistory.find(
+            (message) =>
+              message.role === "assistant" && message.pairId === pairId,
+          );
+          if (message) message.savedToNote = true;
+        }
+      }),
+    );
+  };
+
+  const renderPersistedMessages = (messages: ChatPersistMessage[]): void => {
+    if (!messagesArea.isConnected || currentChatState.itemId !== item.id) {
+      return;
+    }
+    messagesArea.innerHTML = "";
+    const list = Array.isArray(messages) ? messages : [];
+    if (list.length === 0) {
+      messagesArea.innerHTML = `<div style="color: #777; text-align: center; padding: 10px;">${escapeHtmlForChat(getString("itempane-quick-chat-thread-empty"))}</div>`;
+      return;
+    }
+    let index = 0;
+    while (index < list.length) {
+      const message = list[index];
+      if (message.role !== "user") {
+        index += 1;
+        continue;
+      }
+      const question = message.displayContent ?? message.content ?? "";
+      let answer: ChatPersistMessage | undefined;
+      if (index + 1 < list.length && list[index + 1].role === "assistant") {
+        answer = list[index + 1];
+        answer.pairId ||= `${currentChatState.threadId}_legacy_${index + 1}`;
+        index += 2;
+      } else {
+        index += 1;
+      }
+      const pairWrapper = doc.createElement("div");
+      pairWrapper.className = "ai-butler-quick-chat-pair";
+      const pairId = answer?.pairId || `restored_${index}`;
+      pairWrapper.setAttribute("data-pair-id", pairId);
+      pairWrapper.style.cssText = `
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        margin-bottom: 12px;
+        padding: 8px;
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        border-radius: 8px;
+        background: transparent;
+        user-select: text;
+        cursor: text;
+      `;
+      const userMsgDiv = doc.createElement("div");
+      userMsgDiv.className = "ai-butler-quick-chat-user";
+      userMsgDiv.style.cssText = `
+        margin-bottom: 8px;
+        padding: 8px;
+        background: rgba(89, 192, 188, 0.1);
+        border-radius: 6px;
+        border-left: 3px solid #59c0bc;
+        user-select: text;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      `;
+      userMsgDiv.innerHTML = `<strong>${getString("itempane-user-label")}</strong> ${escapeHtmlForChat(question)}`;
+      pairWrapper.appendChild(userMsgDiv);
+      if (answer) {
+        const aiMsgDiv = doc.createElement("div");
+        aiMsgDiv.className = "ai-butler-quick-chat-assistant";
+        aiMsgDiv.style.cssText = `
+          margin-bottom: 8px;
+          padding: 8px;
+          background: rgba(128, 128, 128, 0.05);
+          border-radius: 6px;
+          border-left: 3px solid #667eea;
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+          overflow-x: hidden;
+          user-select: text;
+        `;
+        updateQuickChatAssistantMessage(aiMsgDiv, answer.content);
+        pairWrapper.appendChild(aiMsgDiv);
+        appendPairActions(pairWrapper, pairId, question, answer);
+      }
+      messagesArea.appendChild(pairWrapper);
+    }
+    messagesArea.scrollTop = messagesArea.scrollHeight;
+  };
+
+  const refreshThreadSelect = (): void => {
+    const threads = chatPersist.listThreads(item.id);
+    const selectedId = currentChatState.threadId;
+    threadSelect.innerHTML = "";
+    if (threads.length === 0) {
+      const option = doc.createElement("option");
+      option.value = "";
+      option.textContent = getString("itempane-quick-chat-thread-untitled");
+      threadSelect.appendChild(option);
+      return;
+    }
+    for (const thread of threads) {
+      const option = doc.createElement("option");
+      option.value = thread.id;
+      option.textContent =
+        thread.title || getString("itempane-quick-chat-thread-untitled");
+      if (thread.id === selectedId) option.selected = true;
+      threadSelect.appendChild(option);
+    }
+  };
+
+  const bindThreadToState = (thread: ChatPersistThread): void => {
+    if (!messagesArea.isConnected || currentChatState.itemId !== item.id) {
+      return;
+    }
+    currentChatState.itemId = item.id;
+    currentChatState.threadId = thread.id;
+    currentChatState.conversationHistory = normalizeChatMessages(
+      thread.messages,
+    );
+    Object.assign(currentChatState, cloneChatContext(thread.context));
+    currentChatState.savedPairIds = new Set(
+      currentChatState.conversationHistory
+        .filter((message) => message.savedToNote && message.pairId)
+        .map((message) => message.pairId!),
+    );
+    renderRelatedControls();
+    renderPersistedMessages(currentChatState.conversationHistory);
+    refreshThreadSelect();
+    syncQuickChatThreadControls();
+  };
+
+  const ensureActiveThreadLoaded = async (): Promise<void> => {
+    const generation = quickChatBindGeneration;
+    const requestItemId = item.id;
+    await chatPersist.ensureLoaded();
+    if (
+      generation !== quickChatBindGeneration ||
+      !messagesArea.isConnected ||
+      currentChatState.itemId !== requestItemId ||
+      currentChatState.isChatting
+    ) {
+      return;
+    }
+    if (currentChatState.threadId) {
+      const existing = chatPersist.getThread(
+        item.id,
+        currentChatState.threadId,
+      );
+      if (existing) {
+        if (
+          currentChatState.conversationHistory.length === 0 &&
+          existing.messages.length > 0
+        ) {
+          bindThreadToState(existing);
+          return;
+        }
+        renderPersistedMessages(currentChatState.conversationHistory);
+        refreshThreadSelect();
+        return;
+      }
+    }
+    bindThreadToState(chatPersist.getOrCreateActiveThread(item.id));
+  };
+
+  newThreadBtn.addEventListener("click", async () => {
+    if (currentChatState.isChatting) return;
+    quickChatBindGeneration += 1;
+    await chatPersist.ensureLoaded();
+    if (!messagesArea.isConnected || currentChatState.itemId !== item.id) {
+      return;
+    }
+    persistActiveQuickChatThread();
+    bindThreadToState(chatPersist.createThread(item.id));
+    if (!currentChatState.pdfContent) {
+      void loadPdfContentIfNeeded();
+    }
+  });
+
+  deleteThreadBtn.addEventListener("click", async () => {
+    if (currentChatState.isChatting) return;
+    const targetId = threadSelect.value || currentChatState.threadId;
+    if (!targetId) return;
+    let confirmed = true;
+    try {
+      const win = doc.defaultView;
+      if (win && typeof win.confirm === "function") {
+        confirmed = win.confirm(
+          getString("itempane-quick-chat-thread-delete-confirm"),
+        );
+      }
+    } catch {
+      confirmed = true;
+    }
+    if (!confirmed) return;
+    quickChatBindGeneration += 1;
+    await chatPersist.ensureLoaded();
+    if (!messagesArea.isConnected || currentChatState.itemId !== item.id) {
+      return;
+    }
+    const next = chatPersist.deleteThread(item.id, targetId);
+    if (next) {
+      bindThreadToState(next);
+    } else {
+      currentChatState.threadId = null;
+      currentChatState.conversationHistory = [];
+      currentChatState.savedPairIds = new Set();
+      renderPersistedMessages([]);
+      refreshThreadSelect();
+    }
+  });
+
+  threadSelect.addEventListener("change", async () => {
+    if (currentChatState.isChatting) {
+      refreshThreadSelect();
+      return;
+    }
+    quickChatBindGeneration += 1;
+    const nextId = threadSelect.value;
+    if (!nextId || nextId === currentChatState.threadId) return;
+    await chatPersist.ensureLoaded();
+    if (!messagesArea.isConnected || currentChatState.itemId !== item.id) {
+      return;
+    }
+    persistActiveQuickChatThread();
+    const thread = chatPersist.setActiveThread(item.id, nextId);
+    if (thread) bindThreadToState(thread);
+  });
 
   const getRelatedModeLabel = (mode = currentChatState.relatedMode): string =>
     mode === "summary"
@@ -3269,8 +4741,17 @@ function renderChatArea(
     currentChatState.isChatting = false;
     currentChatState.abortController = null;
     currentChatState.savedPairIds = new Set();
+    persistActiveQuickChatThread();
+    refreshThreadSelect();
     messagesArea.innerHTML = `<div style="color: #777; text-align: center; padding: 10px;">${escapeHtmlForChat(message)}</div>`;
     quickChatPinnedToBottom = true;
+    syncQuickChatThreadControls();
+    sendBtn.textContent = "↑";
+    sendBtn.title = getString("itempane-send");
+    sendBtn.style.background = "#59c0bc";
+    sendBtn.disabled = false;
+    stopBtn.style.display = "none";
+    stopBtn.disabled = false;
   }
 
   function showRelatedLimitMessage(mode = currentChatState.relatedMode): void {
@@ -3385,7 +4866,7 @@ function renderChatArea(
   const scrollQuickChatToBottomIfPinned = (
     wasPinned = quickChatPinnedToBottom,
   ): void => {
-    if (!wasPinned) return;
+    if (!wasPinned || getPref("autoScroll") === false) return;
     messagesArea.scrollTop = messagesArea.scrollHeight;
     quickChatPinnedToBottom = true;
   };
@@ -3515,7 +4996,8 @@ function renderChatArea(
     composer.style.boxShadow = "inset 0 1px 0 rgba(255, 255, 255, 0.06)";
   });
 
-  const startNewQuickChatConversation = (): void => {
+  const startNewQuickChatConversation = async (): Promise<void> => {
+    quickChatBindGeneration += 1;
     currentChatState.abortController?.abort(
       getString("itempane-quick-chat-new-conversation-abort"),
     );
@@ -3525,6 +5007,26 @@ function renderChatArea(
     currentChatState.isChatting = false;
     currentChatState.abortController = null;
     currentChatState.savedPairIds = new Set();
+    syncQuickChatThreadControls();
+    await chatPersist.ensureLoaded();
+    if (!messagesArea.isConnected || currentChatState.itemId !== item.id) {
+      return;
+    }
+    if (currentChatState.itemId != null) {
+      if (!currentChatState.threadId) {
+        const thread = chatPersist.getOrCreateActiveThread(
+          currentChatState.itemId,
+        );
+        currentChatState.threadId = thread.id;
+      }
+      chatPersist.saveMessages(
+        currentChatState.itemId,
+        currentChatState.threadId,
+        [],
+        currentChatState,
+      );
+      refreshThreadSelect();
+    }
 
     messagesArea.innerHTML = `<div style="color: #777; text-align: center; padding: 10px;">${escapeHtmlForChat(getString("itempane-quick-chat-new-conversation-created"))}</div>`;
     inputBox.value = "";
@@ -3547,7 +5049,7 @@ function renderChatArea(
       currentChatState.savedPairIds.size > 0 ||
       messagesArea.querySelector("[data-pair-id]") !== null;
     if (!hasConversationContent) {
-      startNewQuickChatConversation();
+      void startNewQuickChatConversation();
       return;
     }
 
@@ -3562,7 +5064,7 @@ function renderChatArea(
       }
     }
 
-    startNewQuickChatConversation();
+    void startNewQuickChatConversation();
   });
 
   composerTools.appendChild(openPickerBtn);
@@ -3578,7 +5080,10 @@ function renderChatArea(
   inputArea.appendChild(composer);
   chatArea.appendChild(chatHeader);
   chatArea.appendChild(messagesArea);
-  chatArea.appendChild(quickChatResizeHandle);
+  if (!isPageMode) {
+    chatArea.appendChild(quickChatResizeHandle);
+  }
+  inputArea.style.flex = "0 0 auto";
   chatArea.appendChild(inputArea);
   body.appendChild(chatArea);
 
@@ -3593,10 +5098,24 @@ function renderChatArea(
     quickChatBtn.style.borderColor = active ? "#4db6ac" : "#59c0bc";
   };
 
+  const quickChatHasVisibleMessages = (): boolean =>
+    currentChatState.conversationHistory.length > 0 ||
+    !!messagesArea.querySelector(
+      ".ai-butler-quick-chat-assistant, [data-pair-id]",
+    );
+
+  const showPdfStatus = (html: string): void => {
+    if (!messagesArea.isConnected || quickChatHasVisibleMessages()) return;
+    messagesArea.innerHTML = html;
+  };
+
   const loadPdfContentIfNeeded = async (): Promise<void> => {
+    const requestState = currentChatState;
     if (currentChatState.pdfContent) {
       if (!messagesArea.textContent?.trim()) {
-        messagesArea.innerHTML = `<div style="color: #4caf50; text-align: center; padding: 10px;">${getString("itempane-chat-pdf-loaded")}</div>`;
+        showPdfStatus(
+          `<div style="color: #4caf50; text-align: center; padding: 10px;">${getString("itempane-chat-pdf-loaded")}</div>`,
+        );
       }
       return;
     }
@@ -3608,7 +5127,9 @@ function renderChatArea(
         const { default: LLMService } = await import("./llmService");
         const pdfMode = LLMService.getEffectivePdfProcessMode();
 
-        messagesArea.innerHTML = `<div style="color: #999; text-align: center; padding: 10px;">${getString("itempane-chat-loading-pdf")}</div>`;
+        showPdfStatus(
+          `<div style="color: #999; text-align: center; padding: 10px;">${getString("itempane-chat-loading-pdf")}</div>`,
+        );
 
         const { content: pdfContent, isBase64 } =
           await ContentExtractor.extractAnalyzableContentFromItem(
@@ -3617,16 +5138,29 @@ function renderChatArea(
             pdfMode,
           );
 
+        if (
+          currentChatState !== requestState ||
+          currentChatState.itemId !== item.id ||
+          !messagesArea.isConnected
+        )
+          return;
+
         if (pdfContent) {
           currentChatState.pdfContent = pdfContent;
           currentChatState.isBase64 = isBase64;
-          messagesArea.innerHTML = `<div style="color: #4caf50; text-align: center; padding: 10px;">${getString("itempane-chat-pdf-loaded")}</div>`;
+          showPdfStatus(
+            `<div style="color: #4caf50; text-align: center; padding: 10px;">${getString("itempane-chat-pdf-loaded")}</div>`,
+          );
         } else {
-          messagesArea.innerHTML = `<div style="color: #f44336; text-align: center; padding: 10px;">${getString("itempane-chat-pdf-load-unavailable")}</div>`;
+          showPdfStatus(
+            `<div style="color: #f44336; text-align: center; padding: 10px;">${getString("itempane-chat-pdf-load-unavailable")}</div>`,
+          );
         }
       } catch (err: any) {
         ztoolkit.log("[AI-Butler] 快速追问加载 PDF 失败:", err);
-        messagesArea.innerHTML = `<div style="color: #f44336; text-align: center; padding: 10px;">${getString("itempane-chat-load-failed", { args: { message: escapeHtmlForChat(err?.message || getString("common-unknown-error")) } })}</div>`;
+        showPdfStatus(
+          `<div style="color: #f44336; text-align: center; padding: 10px;">${getString("itempane-chat-load-failed", { args: { message: escapeHtmlForChat(err?.message || getString("common-unknown-error")) } })}</div>`,
+        );
       }
     }
   };
@@ -3667,6 +5201,9 @@ function renderChatArea(
   body.addEventListener("ai-butler-toggle-inline-chat", toggleListener);
   quickChatToggleListeners.set(body, toggleListener);
 
+  void ensureActiveThreadLoaded();
+  syncQuickChatThreadControls();
+
   if (initiallyVisible) {
     void loadPdfContentIfNeeded();
   }
@@ -3678,15 +5215,36 @@ function renderChatArea(
 
     if (!question) return;
 
+    const generation = quickChatBindGeneration;
+    await ensureActiveThreadLoaded();
+    if (
+      generation !== quickChatBindGeneration ||
+      !messagesArea.isConnected ||
+      currentChatState.itemId !== item.id ||
+      !currentChatState.threadId ||
+      currentChatState.isChatting
+    )
+      return;
+
     // 检查是否有 PDF 内容
     if (!currentChatState.pdfContent) {
-      messagesArea.innerHTML = `<div style="color: #f44336; text-align: center; padding: 10px;">${getString("itempane-chat-wait-pdf-loaded")}</div>`;
+      if (!quickChatHasVisibleMessages()) {
+        messagesArea.innerHTML = `<div style="color: #f44336; text-align: center; padding: 10px;">${getString("itempane-chat-wait-pdf-loaded")}</div>`;
+      }
       return;
     }
 
     // 设置为正在聊天状态
     currentChatState.isChatting = true;
+    syncQuickChatThreadControls();
     currentChatState.abortController = createChatAbortController();
+    const requestState = currentChatState;
+    const requestController = currentChatState.abortController;
+    const requestThreadId = currentChatState.threadId;
+    const isCurrentRequest = (): boolean =>
+      currentChatState === requestState &&
+      currentChatState.threadId === requestThreadId &&
+      currentChatState.abortController === requestController;
     sendBtn.textContent = "…";
     sendBtn.title = getString("itempane-generating-status");
     sendBtn.style.background = "#9e9e9e";
@@ -3773,53 +5331,6 @@ function renderChatArea(
     aiMsgDiv.innerHTML = `<strong>${getString("itempane-assistant-label")}</strong> <em style="color: #999;">${getString("itempane-thinking")}</em>`;
     pairWrapper.appendChild(aiMsgDiv);
 
-    // 创建保存按钮区域（初始隐藏）
-    const saveArea = doc.createElement("div");
-    saveArea.style.cssText = `
-      display: none;
-      justify-content: flex-end;
-      margin-top: 4px;
-    `;
-    const saveBtn = doc.createElement("button");
-    saveBtn.textContent = getString("itempane-save-note");
-    saveBtn.style.cssText = `
-      padding: 4px 10px;
-      background: #667eea;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 11px;
-    `;
-    const copyBtn = doc.createElement("button");
-    copyBtn.textContent = getString("itempane-copy-answer");
-    copyBtn.style.cssText = `
-      padding: 4px 10px;
-      background: #59c0bc;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 11px;
-      margin-right: 6px;
-    `;
-    copyBtn.addEventListener("click", async () => {
-      const copied = await copyQuickChatText(doc, fullResponse || "");
-      const originalText =
-        copyBtn.textContent || getString("itempane-copy-answer");
-      copyBtn.textContent = copied
-        ? getString("itempane-copied")
-        : getString("itempane-copy-failed");
-      copyBtn.style.background = copied ? "#4caf50" : "#f44336";
-      setTimeout(() => {
-        copyBtn.textContent = originalText;
-        copyBtn.style.background = "#59c0bc";
-      }, 1500);
-    });
-    saveArea.appendChild(copyBtn);
-    saveArea.appendChild(saveBtn);
-    pairWrapper.appendChild(saveArea);
-
     const shouldFollowNewPair = quickChatPinnedToBottom;
     messagesArea.appendChild(pairWrapper);
     scrollQuickChatToBottomIfPinned(shouldFollowNewPair);
@@ -3831,6 +5342,7 @@ function renderChatArea(
 
     try {
       const { default: LLMService } = await import("./llmService");
+      if (!isCurrentRequest()) return;
 
       let relatedContextResult: QuickChatRelatedContextResult | null = null;
       let conversationQuestion = question;
@@ -3853,6 +5365,7 @@ function renderChatArea(
             currentChatState.relatedItems,
             currentChatState.relatedMode,
           );
+          if (!isCurrentRequest()) return;
           currentChatState.relatedContextSignature =
             relatedContextResult.signature;
           currentChatState.relatedContextIncludedCount =
@@ -3909,9 +5422,10 @@ function renderChatArea(
         },
         conversation: conversationHistory,
         transport: {
-          abortSignal: currentChatState.abortController?.signal,
+          abortSignal: requestController.signal,
         },
         onProgress: (chunk: string) => {
+          if (!isCurrentRequest()) return;
           fullResponse += chunk;
           const shouldFollowStream = quickChatPinnedToBottom;
           // Update streaming AI response
@@ -3919,55 +5433,34 @@ function renderChatArea(
           scrollQuickChatToBottomIfPinned(shouldFollowStream);
         },
       });
+      if (!isCurrentRequest()) return;
       fullResponse = response.text;
       responseMetadata = LLMNoteMetadataService.fromResponse("chat", response);
 
       // 完成后最终更新
       updateQuickChatAssistantMessage(aiMsgDiv, fullResponse);
 
-      currentChatState.conversationHistory = appendQuickChatTurn(
-        currentChatState.conversationHistory,
-        conversationQuestion,
-        fullResponse,
+      const answer: ChatPersistMessage = {
+        role: "assistant",
+        content: fullResponse,
+        pairId,
+        noteMetadata: responseMetadata,
+        sourceLabel,
+      };
+      currentChatState.conversationHistory.push(
+        {
+          role: "user",
+          content: conversationQuestion,
+          displayContent: question,
+        },
+        answer,
       );
-
-      // 显示保存按钮
-      saveArea.style.display = "flex";
-
-      // 保存按钮点击事件
-      saveBtn.addEventListener("click", async () => {
-        // 检查是否已保存过
-        if (currentChatState.savedPairIds.has(pairId)) {
-          saveBtn.textContent = getString("itempane-saved");
-          return;
-        }
-
-        // 标记正在保存
-        saveBtn.textContent = getString("itempane-saving");
-        saveBtn.style.background = "#9e9e9e";
-        (saveBtn as HTMLButtonElement).disabled = true;
-
-        try {
-          await saveChatPairToNote(
-            item,
-            pairId,
-            question,
-            fullResponse,
-            responseMetadata,
-            sourceLabel,
-          );
-          currentChatState.savedPairIds.add(pairId);
-          saveBtn.textContent = getString("itempane-saved");
-          saveBtn.style.background = "#4caf50";
-        } catch (err: any) {
-          ztoolkit.log("[AI-Butler] 保存快速追问对话失败:", err);
-          saveBtn.textContent = getString("itempane-save-failed");
-          saveBtn.style.background = "#f44336";
-          (saveBtn as HTMLButtonElement).disabled = false;
-        }
-      });
+      persistActiveQuickChatThread();
+      refreshThreadSelect();
+      appendPairActions(pairWrapper, pairId, question, answer);
     } catch (err: any) {
-      if (isChatAbortError(err, currentChatState.abortController?.signal)) {
+      if (!isCurrentRequest()) return;
+      if (isChatAbortError(err, requestController.signal)) {
         if (fullResponse) {
           updateQuickChatAssistantMessage(
             aiMsgDiv,
@@ -3983,16 +5476,19 @@ function renderChatArea(
       aiMsgDiv.innerHTML = `<strong>${getString("itempane-assistant-label")}</strong> <span style="color: #f44336;">${getString("itempane-error", { args: { error: err?.message || getString("itempane-send-failed") } })}</span>`;
     } finally {
       // 恢复状态
-      currentChatState.isChatting = false;
-      currentChatState.abortController = null;
-      sendBtn.textContent = "↑";
-      sendBtn.title = getString("itempane-send");
-      sendBtn.style.background = "#59c0bc";
-      (sendBtn as HTMLButtonElement).disabled = false;
-      stopBtn.style.display = "none";
-      (stopBtn as HTMLButtonElement).disabled = false;
-      (inputBox as HTMLTextAreaElement).disabled = false;
-      inputBox.focus();
+      if (isCurrentRequest()) {
+        currentChatState.isChatting = false;
+        currentChatState.abortController = null;
+        syncQuickChatThreadControls();
+        sendBtn.textContent = "↑";
+        sendBtn.title = getString("itempane-send");
+        sendBtn.style.background = "#59c0bc";
+        (sendBtn as HTMLButtonElement).disabled = false;
+        stopBtn.style.display = "none";
+        (stopBtn as HTMLButtonElement).disabled = false;
+        (inputBox as HTMLTextAreaElement).disabled = false;
+        inputBox.focus();
+      }
     }
   });
 
@@ -4134,7 +5630,7 @@ async function confirmQuickChatNewConversation(
       color: white;
       cursor: pointer;
       font-size: 12px;
-      font-weight: 650;
+      font-weight: 700;
     `;
     confirmBtn.addEventListener("click", () =>
       finish(true, dontRemindCheckbox.checked),
@@ -4317,57 +5813,7 @@ async function copyQuickChatText(
   }
 }
 
-/**
- * 获取或创建"AI管家-后续追问"独立笔记
- */
-async function getOrCreateChatNote(item: Zotero.Item): Promise<Zotero.Item> {
-  const title =
-    (item.getField("title") as string) || getString("common-paper-title");
-
-  // 查找已有的聊天笔记
-  const noteIDs = (item as any).getNotes?.() || [];
-  for (const nid of noteIDs) {
-    try {
-      const n = await Zotero.Items.getAsync(nid);
-      if (!n) continue;
-      const tags: Array<{ tag: string }> = (n as any).getTags?.() || [];
-      const hasChatTag = tags.some((t) => t.tag === "AI-Butler-Chat");
-      const html: string = (n as any).getNote?.() || "";
-      const titleMatch = /<h2>\s*AI 管家\s*-\s*后续追问\s*-/.test(html);
-      if (hasChatTag || titleMatch) {
-        return n as Zotero.Item;
-      }
-    } catch (e) {
-      continue;
-    }
-  }
-
-  // 创建新笔记
-  const note = new Zotero.Item("note");
-  note.libraryID = item.libraryID;
-  note.parentID = item.id;
-  const header = `<h2>${getString("itempane-chat-note-title", { args: { title: escapeHtmlForNote(title) } })}</h2>`;
-  note.setNote(header);
-  note.addTag("AI-Butler-Chat");
-  await note.saveTx();
-  return note;
-}
-
-/**
- * 转义 HTML 字符（用于笔记保存）
- */
-function escapeHtmlForNote(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-/**
- * 将对话对保存到后续追问笔记
- */
+/** 保存快速追问，与完整追问共用 AI 精读笔记。 */
 async function saveChatPairToNote(
   item: Zotero.Item,
   pairId: string,
@@ -4376,35 +5822,15 @@ async function saveChatPairToNote(
   metadata?: LLMNoteMetadata | null,
   sourceLabel = getString("itempane-quick-chat-source-label"),
 ): Promise<void> {
-  const note = await getOrCreateChatNote(item);
-  let noteHtml = (note as any).getNote?.() || "";
-  const normalizedNoteHtml = normalizeFollowUpChatNoteHtml(noteHtml);
-
-  // 检查是否已存在相同 pairId 的对话对，防止重复保存
-  if (normalizedNoteHtml.includes(`AI_BUTLER_CHAT_PAIR_START id=${pairId}`)) {
-    if (normalizedNoteHtml !== noteHtml) {
-      (note as any).setNote(normalizedNoteHtml);
-      await (note as any).saveTx();
-    }
-    ztoolkit.log("[AI-Butler] 该对话对已保存过，跳过重复保存");
-    return;
-  }
-  noteHtml = normalizedNoteHtml;
-
-  const blockContent = buildFollowUpChatPairNoteHtml({
+  await AiNoteService.appendFollowUpPair({
+    item,
     pairId,
     userMessage,
     assistantMessage,
+    metadata,
     sourceLabel,
   });
-  const block = metadata
-    ? LLMNoteMetadataService.wrapHtml(blockContent, metadata)
-    : blockContent;
-
-  noteHtml += block;
-  (note as any).setNote(noteHtml);
-  await (note as any).saveTx();
-  ztoolkit.log("[AI-Butler] 快速追问对话已保存到笔记");
+  scheduleSidebarRefresh("deepRead");
 }
 
 /**
@@ -4719,58 +6145,34 @@ function normalizeHtmlFragmentForXhtml(doc: Document, html: string): string {
   return repaired
     .replace(/<hr\s*(?:([^>/]*))?>/gi, "<hr $1/>")
     .replace(/<br\s*(?:([^>/]*))?>/gi, "<br $1/>")
-    .replace(/<img\s+([^>]*)(?<!\/)>/gi, "<img $1/>")
-    .replace(/<input\s+([^>]*)(?<!\/)>/gi, "<input $1/>")
-    .replace(/<meta\s+([^>]*)(?<!\/)>/gi, "<meta $1/>")
-    .replace(/<link\s+([^>]*)(?<!\/)>/gi, "<link $1/>")
+    .replace(/<(img|input|meta|link)\b([^>]*?)\/?\s*>/gi, "<$1$2/>")
     .replace(/\s+\/>/g, "/>")
     .replace(/&nbsp;/gi, "&#160;")
     .replace(new RegExp("<(?=[^a-zA-Z/?!])", "g"), "&lt;");
 }
 
-function getVisibleTextLength(text: string): number {
-  return Array.from(text.replace(/\s+/g, "").trim()).length;
-}
-
-function demoteLongSidebarHeadingsToBlockquote(
-  doc: Document,
-  html: string,
-): string {
+/** Omit the generated note title from the preview, preserving stored HTML. */
+function hideSidebarNoteTitle(doc: Document, html: string): string {
   try {
-    const mainWin: any =
-      Zotero && (Zotero as any).getMainWindow
-        ? (Zotero as any).getMainWindow()
-        : (globalThis as any);
-    const implementation: any =
-      mainWin?.document?.implementation || doc.implementation;
-    const createHTMLDocument: any = implementation?.createHTMLDocument;
-    if (typeof createHTMLDocument !== "function") return html;
-
-    const htmlDoc: Document = createHTMLDocument.call(implementation, "");
+    const htmlDoc = doc.implementation.createHTMLDocument("");
     const container = htmlDoc.createElement("div");
     container.innerHTML = html;
 
-    container.querySelectorAll("h1, h2").forEach((heading: Element) => {
-      const headingText = heading.textContent || "";
-      if (
-        getVisibleTextLength(headingText) <=
-        SIDEBAR_HEADING_TO_BLOCKQUOTE_TEXT_THRESHOLD
-      ) {
-        return;
-      }
-
-      const blockquote = htmlDoc.createElement("blockquote");
-      const paragraph = htmlDoc.createElement("p");
-      while (heading.firstChild) {
-        paragraph.appendChild(heading.firstChild);
-      }
-      blockquote.appendChild(paragraph);
-      heading.replaceWith(blockquote);
-    });
+    const heading = container.querySelector("h1, h2");
+    const headingText = (heading?.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (
+      /^AI\s*(?:(?:Butler|管家)\s*[-–—:：]\s*)?(?:Summary|Deep Reading|总结|精读)\s*[-–—:：]/i.test(
+        headingText,
+      )
+    ) {
+      heading?.remove();
+    }
 
     return container.innerHTML;
   } catch (err) {
-    ztoolkit.log("[AI-Butler] 降级侧边栏长一级标题失败:", err);
+    ztoolkit.log("[AI-Butler] 隐藏侧边栏笔记标题失败:", err);
     return html;
   }
 }
@@ -5132,6 +6534,8 @@ async function loadNoteContent(
     let aiNoteContent = "";
     const resolvedNote = await resolveSidebarSummaryNote(item, noteKind);
 
+    if (!noteContent.isConnected || isSidebarNoteEditing(item.id)) return;
+
     if (!resolvedNote) {
       hideSidebarMetadataPicker(doc, noteKind);
       noteContent.innerHTML = `
@@ -5156,6 +6560,7 @@ async function loadNoteContent(
         ztoolkit.log("[AI-Butler] 修复 AI 笔记溢出样式失败:", error);
       }
     }
+    if (!noteContent.isConnected || isSidebarNoteEditing(item.id)) return;
     const summaryBlocks = getDisplaySummaryBlocks(
       LLMNoteMetadataService.parseSummaryBlocks(rawNoteHtml),
     );
@@ -5248,18 +6653,19 @@ async function loadNoteContent(
           itemButton.title = tooltip;
           itemButton.style.cssText = `
             display: grid;
-            grid-template-columns: auto 1fr;
-            column-gap: 8px;
+            grid-template-columns: auto minmax(0, 1fr);
+            column-gap: 10px;
             align-items: center;
             width: 100%;
-            padding: 6px 8px;
+            min-height: 38px;
+            padding: 8px 10px;
             border: 0;
-            border-radius: 6px;
+            border-radius: 8px;
             background: ${index === selectedBlockIndex ? "rgba(89, 192, 188, 0.14)" : "transparent"};
             color: inherit;
             cursor: pointer;
             font-size: 12px;
-            line-height: 1.35;
+            line-height: 1.45;
             text-align: left;
           `;
 
@@ -5267,7 +6673,8 @@ async function loadNoteContent(
           countLine.textContent = `${index + 1}/${summaryBlocks.length}`;
           countLine.style.cssText = `
             min-width: 32px;
-            font-weight: 700;
+            font-weight: 800;
+            line-height: 1.45;
             color: #59c0bc;
           `;
           const labelLine = doc.createElement("span");
@@ -5277,7 +6684,8 @@ async function loadNoteContent(
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            opacity: 0.82;
+            line-height: 1.45;
+            opacity: 0.86;
           `;
           itemButton.appendChild(countLine);
           itemButton.appendChild(labelLine);
@@ -5325,6 +6733,8 @@ async function loadNoteContent(
     const themeCss = await themeManager.loadThemeCss();
     const katexCss = await themeManager.loadKatexCss();
     const adaptedCss = themeManager.adaptCssForSidebar(themeCss);
+
+    if (!noteContent.isConnected || isSidebarNoteEditing(item.id)) return;
 
     // 注入样式
     let styleEl = doc.getElementById(
@@ -5391,7 +6801,7 @@ async function loadNoteContent(
               trust: true,
               strict: false,
             });
-            return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+            return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
           } catch {
             return `<code>${innerContent}</code>`;
           }
@@ -5433,12 +6843,9 @@ async function loadNoteContent(
 
           if (isBlock) {
             // Removing delimiters
-            let latex = "";
-            if (isDoubleDollar) {
-              latex = trimmed.slice(2, -2);
-            } else {
-              latex = trimmed.slice(1, -1);
-            }
+            const latex = isDoubleDollar
+              ? trimmed.slice(2, -2)
+              : trimmed.slice(1, -1);
 
             try {
               const rendered = katex.renderToString(cleanLatex(latex), {
@@ -5448,7 +6855,7 @@ async function loadNoteContent(
                 trust: true,
                 strict: false,
               });
-              return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+              return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
             } catch {
               return `<code>${innerContent}</code>`;
             }
@@ -5464,7 +6871,7 @@ async function loadNoteContent(
                 strict: false,
               });
               if (isTaggedDisplay) {
-                return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+                return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
               }
               return `<span class="katex-inline">${rendered}</span>`;
             } catch {
@@ -5492,7 +6899,7 @@ async function loadNoteContent(
                 strict: false,
               },
             );
-            return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+            return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
           } catch {
             // Render failed, escape the formula for safe display
             const escaped = formula
@@ -5505,50 +6912,38 @@ async function loadNoteContent(
       );
 
       // 4. Render legacy inline formulas $...$ (backward compatibility)
-      // Use RegExp constructor to avoid ESLint escape warnings
-      // In RegExp string: \\$ becomes \$ in pattern (matches literal $)
-      const inlineRegex = new RegExp(
-        "(?<!\\$)\\$(?!\\$)([^\\$\\n]+?)\\$(?!\\$)",
-        "g",
-      );
-      result = result.replace(
-        inlineRegex,
-        (_match: string, formula: string) => {
-          try {
-            const latex = decodeMathHtmlEntities(formula.trim());
-            const isTaggedDisplay = requiresDisplayMath(latex);
-            const rendered = katex.renderToString(cleanLatex(latex), {
-              throwOnError: false,
-              displayMode: isTaggedDisplay ? true : false,
-              output: "html",
-              trust: true,
-              strict: false,
-            });
-            if (isTaggedDisplay) {
-              return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
-            }
-            return `<span class="katex-inline">${rendered}</span>`;
-          } catch {
-            // Render failed, escape the formula for safe display
-            const escaped = formula
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;");
-            return `<code>$${escaped}$</code>`;
+      result = replaceInlineMath(result, (formula) => {
+        try {
+          const latex = decodeMathHtmlEntities(formula.trim());
+          const isTaggedDisplay = requiresDisplayMath(latex);
+          const rendered = katex.renderToString(cleanLatex(latex), {
+            throwOnError: false,
+            displayMode: isTaggedDisplay ? true : false,
+            output: "html",
+            trust: true,
+            strict: false,
+          });
+          if (isTaggedDisplay) {
+            return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
           }
-        },
-      );
+          return `<span class="katex-inline">${rendered}</span>`;
+        } catch {
+          // Render failed, escape the formula for safe display
+          const escaped = formula
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+          return `<code>$${escaped}$</code>`;
+        }
+      });
 
       return result;
     };
 
-    const adjustedHeadingContent = demoteLongSidebarHeadingsToBlockquote(
-      doc,
-      aiNoteContent,
-    );
+    const previewContent = hideSidebarNoteTitle(doc, aiNoteContent);
 
     // Render LaTeX first (before XML validation)
-    const latexRenderedContent = renderLatexFormulas(adjustedHeadingContent);
+    const latexRenderedContent = renderLatexFormulas(previewContent);
 
     const sanitizedContent = normalizeHtmlFragmentForXhtml(
       doc,

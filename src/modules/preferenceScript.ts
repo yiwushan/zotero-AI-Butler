@@ -1,5 +1,6 @@
 import { getPref, setPref, clearPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
+import { DEFAULT_NOTE_EXPORT_FILENAME_TEMPLATE } from "./noteExportNaming";
 import {
   getDefaultSummaryPrompt,
   getDefaultTableTemplate,
@@ -243,8 +244,10 @@ function initializeDefaultPrefs() {
     contextMenuItemOrder: DEFAULT_CONTEXT_MENU_ITEM_ORDER_PREF,
     sidebarModuleVisibility: DEFAULT_SIDEBAR_MODULE_VISIBILITY_PREF,
     sidebarModuleOrder: DEFAULT_SIDEBAR_MODULE_ORDER_PREF,
+    sidebarActiveTab: "deepRead",
     noteExportEnabled: false,
     noteExportRootPath: "",
+    noteExportFilenameTemplate: DEFAULT_NOTE_EXPORT_FILENAME_TEMPLATE,
     noteExportWatchedCollections: "[]",
     noteExportIncludeSubcollections: true,
     noteExportFormats:
@@ -261,8 +264,7 @@ function initializeDefaultPrefs() {
       // 特殊处理提示词更新
       if (key === "summaryPrompt") {
         const currentPromptVersion = getPref("promptVersion" as any) as
-          | number
-          | undefined;
+          number | undefined;
         const currentPrompt = currentValue as string | undefined;
 
         // 检查是否需要更新提示词
