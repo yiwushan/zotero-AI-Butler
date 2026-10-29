@@ -1386,6 +1386,9 @@ export class SummaryView extends BaseView {
       this.finishItem();
 
       const aiSummaryText = SummaryView.noteHtmlToPlainText(html);
+      this.appendSummaryCard(aiSummaryText);
+      if (!CHAT_ENABLED) return;
+
       // 获取PDF内容以支持后续追问
       try {
         const { ContentExtractor } = await import("../contentExtractor");
@@ -1407,13 +1410,6 @@ export class SummaryView extends BaseView {
             isBase64,
             aiSummaryText,
           );
-
-          // 在对话区域追加一张“AI 总结”卡片，默认可折叠
-          try {
-            this.appendSummaryCard(aiSummaryText);
-          } catch (e) {
-            ztoolkit.log("[AI-Butler] 渲染AI总结卡片失败:", e);
-          }
 
           // 载入并渲染已有的“后续追问”历史（如有），恢复为原生对话格式
           try {

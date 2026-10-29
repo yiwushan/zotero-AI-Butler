@@ -10,7 +10,7 @@ const source = readFileSync(
   "utf8",
 );
 const compiled = transformSync(
-  `${source}\nexport { fitSidebarShellToViewport, canElementScrollVertically };`,
+  `${source}\nexport { fitSidebarShellToViewport, bindSidebarViewportEvents, canElementScrollVertically };`,
   { loader: "ts", format: "cjs", target: "es2018" },
 );
 const module = { exports: {} };
@@ -19,8 +19,11 @@ vm.runInNewContext(compiled.code, {
   exports: module.exports,
   require: () => ({}),
 });
-const { fitSidebarShellToViewport, canElementScrollVertically } =
-  module.exports;
+const {
+  fitSidebarShellToViewport,
+  bindSidebarViewportEvents,
+  canElementScrollVertically,
+} = module.exports;
 
 function sidebarViewport(ownHeight, topHeight, offset = 0) {
   const view = { innerHeight: ownHeight, top: { innerHeight: topHeight } };
@@ -66,6 +69,76 @@ test("a temporarily hidden iframe never grows to its host's height", () => {
   const { body, shell } = sidebarViewport(0, 900);
   fitSidebarShellToViewport(body, shell);
   assert.equal(shell.style.height, "0px");
+});
+
+test("a section below Zotero's viewport retains space for its saved note", () => {
+  for (const offset of [792, 800, 1200]) {
+    const { body, shell } = sidebarViewport(800, 800, offset);
+    fitSidebarShellToViewport(body, shell);
+    assert.equal(shell.style.height, "792px");
+  }
+});
+
+test("a hidden iframe remains collapsed even with an offscreen section", () => {
+  const { body, shell } = sidebarViewport(0, 900, 500);
+  fitSidebarShellToViewport(body, shell);
+  assert.equal(shell.style.height, "0px");
+});
+
+function eventTarget() {
+  const listeners = new Map();
+  return {
+    addEventListener(type, listener, capture) {
+      listeners.set(type, { listener, capture });
+    },
+    removeEventListener(type, listener, capture) {
+      assert.equal(listeners.get(type)?.listener, listener);
+      assert.equal(listeners.get(type)?.capture, capture);
+      listeners.delete(type);
+    },
+    fire(type, target) {
+      listeners.get(type)?.listener({ target });
+    },
+    listeners,
+  };
+}
+
+test("host scrolling recalculates height without relayout on note scrolling", () => {
+  const doc = eventTarget();
+  const view = eventTarget();
+  const top = eventTarget();
+  view.top = top;
+  doc.defaultView = view;
+  const note = {};
+  const body = { ownerDocument: doc, contains: (target) => target === note };
+  let layouts = 0;
+  const cleanup = bindSidebarViewportEvents(body, () => layouts++);
+  assert.equal(doc.listeners.get("scroll").capture, true);
+  doc.fire("scroll", doc);
+  doc.fire("scroll", {});
+  view.fire("resize", view);
+  top.fire("resize", top);
+  assert.equal(layouts, 4);
+  doc.fire("scroll", note);
+  assert.equal(layouts, 4);
+  cleanup();
+  assert.equal(
+    doc.listeners.size + view.listeners.size + top.listeners.size,
+    0,
+  );
+});
+
+test("a top-level sidebar binds the shared resize target only once", () => {
+  const doc = eventTarget();
+  const view = eventTarget();
+  view.top = view;
+  doc.defaultView = view;
+  const cleanup = bindSidebarViewportEvents(
+    { ownerDocument: doc, contains: () => false },
+    () => {},
+  );
+  cleanup();
+  assert.equal(view.listeners.size, 0);
 });
 
 function overflowingElement(overflowY, scrollTop = 0) {

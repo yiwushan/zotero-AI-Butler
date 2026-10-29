@@ -1,6 +1,6 @@
 # Doubao Reading Edition
 
-Based on upstream Zotero AI Butler 5.1.1. Custom version: `5.1.1-doubao-lite.2`.
+Based on upstream Zotero AI Butler 5.1.1. Custom version: `5.1.1-doubao-lite.3`.
 
 ## Scope
 
@@ -74,3 +74,17 @@ Gecko also requires a secure update URL for usability; a local `data:` URL is
 not a suitable replacement. Lite.2 restores the HTTPS field and uses the
 per-add-on update setting instead. Postbuild now checks the actual XPI archive
 and the required Zotero installation fields, not only the runtime bundle.
+
+### Note Preview Fix In Lite.3
+
+The upstream tabbed sidebar sized its body from its distance to the bottom of
+the viewport. When Zotero initially rendered the section below the viewport,
+this became zero; scrolling to the section did not recalculate its height.
+Lite.3 reserves space for offscreen sections and recalculates on host scrolling,
+without reacting to scrolling inside the note itself. Hidden legacy iframes
+still use their own viewport, not the main window's height.
+
+Opening a saved summary from the task queue now displays the note before any
+PDF extraction. In the reading edition it does not extract the source document
+or initialize chat at all. These changes do not regenerate or delete notes,
+enable Agent/chat, or reset sidebar visibility preferences.

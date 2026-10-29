@@ -1195,12 +1195,13 @@ function renderItemPaneSection(
     fitSidebarShellToViewport(body, shell);
     applySidebarTabOverflow(nav, tabs, tabButtons, overflowMenuItems, moreWrap);
   };
-  doc.defaultView?.addEventListener("resize", relayoutSidebar);
-  doc.defaultView?.top?.addEventListener("resize", relayoutSidebar);
+  const cleanupViewportEvents = bindSidebarViewportEvents(
+    body,
+    relayoutSidebar,
+  );
   sidebarWorkspaceMenuCleanups.set(body, () => {
     doc.removeEventListener("click", closeMenu);
-    doc.defaultView?.removeEventListener("resize", relayoutSidebar);
-    doc.defaultView?.top?.removeEventListener("resize", relayoutSidebar);
+    cleanupViewportEvents();
   });
 
   for (const tab of tabs) {
@@ -1246,17 +1247,44 @@ function fitSidebarShellToViewport(
 
   const rect = body.getBoundingClientRect();
   const bottomInset = 8;
-  // The iframe owns the visible viewport; the host height includes Zotero's toolbars.
-  const available = Math.floor(
-    view.innerHeight - Math.max(0, rect.top) - bottomInset,
+  // A modern section can start below the viewport inside Zotero's scrolling pane.
+  // Reserve space there so scrolling to it does not leave a zero-height preview.
+  const viewportHeight = Math.max(
+    0,
+    Math.floor(view.innerHeight - bottomInset),
   );
-  const targetHeight = Math.max(0, available);
+  const top = Math.max(0, Math.floor(rect.top));
+  const targetHeight =
+    top >= viewportHeight ? viewportHeight : viewportHeight - top;
 
   body.style.height = `${targetHeight}px`;
   body.style.minHeight = `${targetHeight}px`;
   shell.style.height = `${targetHeight}px`;
   shell.style.minHeight = `${targetHeight}px`;
   shell.style.maxHeight = `${targetHeight}px`;
+}
+
+function bindSidebarViewportEvents(
+  body: HTMLElement,
+  relayout: () => void,
+): () => void {
+  const doc = body.ownerDocument;
+  if (!doc) return () => {};
+  const view = doc.defaultView;
+  const top = view?.top;
+  const onScroll = (event: Event): void => {
+    if (event.target && body.contains(event.target as Node)) return;
+    relayout();
+  };
+
+  view?.addEventListener("resize", relayout);
+  if (top && top !== view) top.addEventListener("resize", relayout);
+  doc.addEventListener("scroll", onScroll, true);
+  return () => {
+    view?.removeEventListener("resize", relayout);
+    if (top && top !== view) top.removeEventListener("resize", relayout);
+    doc.removeEventListener("scroll", onScroll, true);
+  };
 }
 
 function bindSidebarWheelTrap(shell: HTMLElement): void {
